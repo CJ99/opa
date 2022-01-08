@@ -25,29 +25,29 @@ allow {
 }
 
 is_token_valid {
-  token.valid
-  now := time.now_ns() / 1000000000
-  token.payload.nbf <= now
-  now < token.payload.exp
+    token.valid
+    now := time.now_ns() / 1000000000
+    token.payload.nbf <= now
+    now < token.payload.exp
 }
 
 action_allowed {
-  http.method == "GET"
-  token.payload.role == "guest"
-  glob.match("/people/*", ["/"], http.path)
+    http.method == "GET"
+    token.payload.role == "guest"
+    glob.match("/people/*", ["/"], http.path)
 }
 
 action_allowed {
-  http.method == "GET"
-  token.payload.role == "admin"
-  glob.match("/people/*", ["/"], http.path)
+    http.method == "GET"
+    token.payload.role == "admin"
+    glob.match("/people/*", ["/"], http.path)
 }
 
 action_allowed {
-  http.method == "POST"
-  token.payload.role == "admin"
-  glob.match("/people", ["/"], http.path)
-  lower(input.parsed_body.firstname) != base64url.decode(token.payload.sub)
+    http.method == "POST"
+    token.payload.role == "admin"
+    glob.match("/people", ["/"], http.path)
+    lower(input.parsed_body.firstname) != base64url.decode(token.payload.sub)
 }
 
 
@@ -108,18 +108,18 @@ that provides additional details along with the status of the request (ie. `allo
 package envoy.authz
 
 default allow = {
-  "allowed": false,
-  "headers": {"x-ext-auth-allow": "no"},
-  "body": "Unauthorized Request",
-  "http_status": 301
+    "allowed": false,
+    "headers": {"x-ext-auth-allow": "no"},
+    "body": "Unauthorized Request",
+    "http_status": 301
 }
 
 allow = response {
-  input.attributes.request.http.method == "GET"
-  response := {
-    "allowed": true,
-    "headers": {"x-ext-auth-allow": "yes"}
-  }
+    input.attributes.request.http.method == "GET"
+    response := {
+        "allowed": true,
+        "headers": {"x-ext-auth-allow": "yes"}
+    }
 }
 ```
 
@@ -233,7 +233,7 @@ http_filters:
 
 #### Example Input
 
-<details><summary>Example v3 Input</summary>
+{{<detail-tag "Example v3 Input">}}
 ```json
 {
   "attributes": {
@@ -289,9 +289,9 @@ http_filters:
   }
 }
 ```
-</details>
+{{</detail-tag>}}
 
-<details><summary>Example v2 Input</summary>
+{{<detail-tag "Example v2 Input">}}
 ```json
 {
   "attributes":{
@@ -353,7 +353,7 @@ http_filters:
   }
 }
 ```
-</details>
+{{</detail-tag>}}
 
 The `parsed_path` field in the input is generated from the `path` field in the HTTP request which is included in the
 Envoy External Authorization `CheckRequest` message type. This field provides the request path as a string array which
@@ -366,7 +366,7 @@ package envoy.authz
 default allow = false
 
 allow {
-   input.parsed_path = ["people"]
+    input.parsed_path == ["people"]
 }
 ```
 
@@ -380,9 +380,9 @@ package envoy.authz
 default allow = false
 
 allow {
-   input.parsed_path = ["people"]
-   input.parsed_query.lang = ["en"]
-   input.parsed_query.id = ["1", "2"]
+    input.parsed_path == ["people"]
+    input.parsed_query.lang == ["en"]
+    input.parsed_query.id == ["1", "2"]
 }
 ```
 
@@ -396,8 +396,8 @@ package envoy.authz
 default allow = false
 
 allow {
-   input.parsed_body.firstname == "Charlie"
-   input.parsed_body.lastname == "Opa"
+    input.parsed_body.firstname == "Charlie"
+    input.parsed_body.lastname == "Opa"
 }
 ```
 
