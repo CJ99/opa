@@ -265,11 +265,22 @@ func retryable(err error) (bool, time.Duration) {
 
 // throttleDelay returns a duration to wait for if an explicit throttle time
 // is included in the response status.
-func throttleDelay(status *status.Status) time.Duration {
-	for _, detail := range status.Details() {
+func throttleDelay(s *status.Status) time.Duration {
+	for _, detail := range s.Details() {
 		if t, ok := detail.(*errdetails.RetryInfo); ok {
 			return t.RetryDelay.AsDuration()
 		}
 	}
 	return 0
+}
+
+// MarshalLog is the marshaling function used by the logging system to represent this Client.
+func (c *client) MarshalLog() interface{} {
+	return struct {
+		Type     string
+		Endpoint string
+	}{
+		Type:     "otlphttpgrpc",
+		Endpoint: c.endpoint,
+	}
 }
