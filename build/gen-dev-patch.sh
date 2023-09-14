@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+stty -onlcr # don't translate newline to carriage return-newline, as these break patch tool
 set -e
 
 OPA_DIR=/go/src/github.com/open-policy-agent/opa
@@ -39,8 +40,8 @@ cd $OPA_DIR
 
 LAST_VERSION=$(git describe --abbrev=0 --tags | cut -c 2-)
 
-update_makefile() {
-    sed -i='' -e "s/Version\s\+=\s\+\".\+\"$/Version = \"$VERSION-dev\"/" version/version.go
+update_version() {
+    ./build/update-version.sh "$VERSION-dev"
 }
 
 update_changelog() {
@@ -57,7 +58,7 @@ EOF
 }
 
 main() {
-    update_makefile
+    update_version
     update_changelog
     git --no-pager diff --no-color
 }

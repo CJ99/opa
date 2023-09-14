@@ -196,6 +196,14 @@ func TestActiveConfig(t *testing.T) {
 		"plugins": {
 			"some-plugin": {}
 		},
+		"server": {
+			"encoding": {
+				"gzip": {
+					"min_length": 1024,
+					"compression_level": 1
+				}
+			}
+		},
 		"discovery": {"name": "config"}`
 
 	serviceObj := `"services": {
@@ -248,6 +256,14 @@ func TestActiveConfig(t *testing.T) {
 		},
 		"plugins": {
 			"some-plugin": {}
+		},
+		"server": {
+			"encoding": {
+				"gzip": {
+					"min_length": 1024,
+					"compression_level": 1
+				}
+			}
 		},
 		"default_authorization_decision": "/system/authz/allow",
 		"default_decision": "/system/main",
@@ -360,4 +376,37 @@ func TestActiveConfig(t *testing.T) {
 		})
 	}
 
+}
+
+func TestExtraConfigFieldsRoundtrip(t *testing.T) {
+	raw := []byte(`
+decision_logger:
+  console: true
+foo: baz
+bar:
+  really: yes!`)
+	conf, err := ParseConfig(raw, "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	actual, err := conf.ActiveConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := map[string]any{
+		"foo":                            "baz",
+		"bar":                            map[string]any{"really": "yes!"},
+		"decision_logger":                map[string]any{"console": true},
+		"default_authorization_decision": "/system/authz/allow",
+		"default_decision":               "/system/main",
+		"labels": map[string]any{
+			"id":      "id",
+			"version": version.Version,
+		},
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("want %v got %v", expected, actual)
+	}
 }

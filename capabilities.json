@@ -573,6 +573,23 @@
       }
     },
     {
+      "name": "crypto.hmac.equal",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "type": "boolean"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "crypto.hmac.md5",
       "decl": {
         "args": [
@@ -650,6 +667,31 @@
         ],
         "result": {
           "type": "string"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "crypto.parse_private_keys",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "dynamic": {
+            "dynamic": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "any"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
         },
         "type": "function"
       }
@@ -758,6 +800,31 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "crypto.x509.parse_keypair",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "dynamic": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "any"
+            }
+          },
+          "type": "object"
         },
         "type": "function"
       }
@@ -894,10 +961,18 @@
             "type": "string"
           },
           {
-            "dynamic": {
-              "type": "string"
-            },
-            "type": "array"
+            "of": [
+              {
+                "type": "null"
+              },
+              {
+                "dynamic": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "type": "any"
           },
           {
             "type": "string"
@@ -975,6 +1050,337 @@
             "type": "any"
           },
           "type": "set"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "graph.reachable_paths",
+      "decl": {
+        "args": [
+          {
+            "dynamic": {
+              "key": {
+                "type": "any"
+              },
+              "value": {
+                "of": [
+                  {
+                    "dynamic": {
+                      "type": "any"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "of": {
+                      "type": "any"
+                    },
+                    "type": "set"
+                  }
+                ],
+                "type": "any"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "of": [
+              {
+                "dynamic": {
+                  "type": "any"
+                },
+                "type": "array"
+              },
+              {
+                "of": {
+                  "type": "any"
+                },
+                "type": "set"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "of": {
+            "dynamic": {
+              "type": "any"
+            },
+            "type": "array"
+          },
+          "type": "set"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "graphql.is_valid",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          },
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "type": "boolean"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "graphql.parse",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          },
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "static": [
+            {
+              "dynamic": {
+                "key": {
+                  "type": "any"
+                },
+                "value": {
+                  "type": "any"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "dynamic": {
+                "key": {
+                  "type": "any"
+                },
+                "value": {
+                  "type": "any"
+                }
+              },
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "graphql.parse_and_verify",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          },
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "static": [
+            {
+              "type": "boolean"
+            },
+            {
+              "dynamic": {
+                "key": {
+                  "type": "any"
+                },
+                "value": {
+                  "type": "any"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "dynamic": {
+                "key": {
+                  "type": "any"
+                },
+                "value": {
+                  "type": "any"
+                }
+              },
+              "type": "object"
+            }
+          ],
+          "type": "array"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "graphql.parse_query",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "dynamic": {
+            "key": {
+              "type": "any"
+            },
+            "value": {
+              "type": "any"
+            }
+          },
+          "type": "object"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "graphql.parse_schema",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "dynamic": {
+            "key": {
+              "type": "any"
+            },
+            "value": {
+              "type": "any"
+            }
+          },
+          "type": "object"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "graphql.schema_is_valid",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "type": "boolean"
         },
         "type": "function"
       }
@@ -1071,7 +1477,8 @@
           "type": "object"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "indexof",
@@ -1280,7 +1687,8 @@
           "type": "array"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "io.jwt.encode_sign",
@@ -1324,7 +1732,8 @@
           "type": "string"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "io.jwt.encode_sign_raw",
@@ -1344,7 +1753,8 @@
           "type": "string"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "io.jwt.verify_es256",
@@ -1738,6 +2148,92 @@
       }
     },
     {
+      "name": "json.match_schema",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          },
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "static": [
+            {
+              "type": "boolean"
+            },
+            {
+              "dynamic": {
+                "static": [
+                  {
+                    "key": "desc",
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "key": "error",
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "key": "field",
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "key": "type",
+                    "value": {
+                      "type": "string"
+                    }
+                  }
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          ],
+          "type": "array"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "json.patch",
       "decl": {
         "args": [
@@ -1850,6 +2346,52 @@
         ],
         "result": {
           "type": "any"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "json.verify_schema",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "static": [
+            {
+              "type": "boolean"
+            },
+            {
+              "of": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "any"
+            }
+          ],
+          "type": "array"
         },
         "type": "function"
       }
@@ -2249,6 +2791,20 @@
       }
     },
     {
+      "name": "net.cidr_is_valid",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "type": "boolean"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "net.cidr_merge",
       "decl": {
         "args": [
@@ -2316,12 +2872,36 @@
           "type": "set"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "numbers.range",
       "decl": {
         "args": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "result": {
+          "dynamic": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "numbers.range_step",
+      "decl": {
+        "args": [
+          {
+            "type": "number"
+          },
           {
             "type": "number"
           },
@@ -2417,6 +2997,31 @@
       }
     },
     {
+      "name": "object.keys",
+      "decl": {
+        "args": [
+          {
+            "dynamic": {
+              "key": {
+                "type": "any"
+              },
+              "value": {
+                "type": "any"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "result": {
+          "of": {
+            "type": "any"
+          },
+          "type": "set"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "object.remove",
       "decl": {
         "args": [
@@ -2430,6 +3035,73 @@
               }
             },
             "type": "object"
+          },
+          {
+            "of": [
+              {
+                "dynamic": {
+                  "type": "any"
+                },
+                "type": "array"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "of": {
+                  "type": "any"
+                },
+                "type": "set"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "type": "any"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "object.subset",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "dynamic": {
+                  "type": "any"
+                },
+                "type": "array"
+              },
+              {
+                "dynamic": {
+                  "key": {
+                    "type": "any"
+                  },
+                  "value": {
+                    "type": "any"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "of": {
+                  "type": "any"
+                },
+                "type": "set"
+              }
+            ],
+            "type": "any"
           },
           {
             "of": [
@@ -2500,6 +3172,31 @@
       }
     },
     {
+      "name": "object.union_n",
+      "decl": {
+        "args": [
+          {
+            "dynamic": {
+              "dynamic": {
+                "key": {
+                  "type": "any"
+                },
+                "value": {
+                  "type": "any"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        ],
+        "result": {
+          "type": "any"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "opa.runtime",
       "decl": {
         "result": {
@@ -2514,7 +3211,8 @@
           "type": "object"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "or",
@@ -2599,6 +3297,50 @@
       }
     },
     {
+      "name": "providers.aws.sign_req",
+      "decl": {
+        "args": [
+          {
+            "dynamic": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "any"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "dynamic": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "any"
+              }
+            },
+            "type": "object"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "result": {
+          "dynamic": {
+            "key": {
+              "type": "any"
+            },
+            "value": {
+              "type": "any"
+            }
+          },
+          "type": "object"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "rand.intn",
       "decl": {
         "args": [
@@ -2613,7 +3355,8 @@
           "type": "number"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "re_match",
@@ -2730,6 +3473,26 @@
       }
     },
     {
+      "name": "regex.replace",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "type": "string"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "regex.split",
       "decl": {
         "args": [
@@ -2768,6 +3531,27 @@
         ],
         "result": {
           "type": "boolean"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "rego.metadata.chain",
+      "decl": {
+        "result": {
+          "dynamic": {
+            "type": "any"
+          },
+          "type": "array"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "rego.metadata.rule",
+      "decl": {
+        "result": {
+          "type": "any"
         },
         "type": "function"
       }
@@ -2986,6 +3770,108 @@
           },
           {
             "type": "string"
+          }
+        ],
+        "result": {
+          "type": "boolean"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "strings.any_prefix_match",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "of": {
+                  "type": "string"
+                },
+                "type": "set"
+              }
+            ],
+            "type": "any"
+          },
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "of": {
+                  "type": "string"
+                },
+                "type": "set"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "type": "boolean"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "strings.any_suffix_match",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "of": {
+                  "type": "string"
+                },
+                "type": "set"
+              }
+            ],
+            "type": "any"
+          },
+          {
+            "of": [
+              {
+                "type": "string"
+              },
+              {
+                "dynamic": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "of": {
+                  "type": "string"
+                },
+                "type": "set"
+              }
+            ],
+            "type": "any"
           }
         ],
         "result": {
@@ -3256,13 +4142,58 @@
       }
     },
     {
+      "name": "time.format",
+      "decl": {
+        "args": [
+          {
+            "of": [
+              {
+                "type": "number"
+              },
+              {
+                "static": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "static": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              }
+            ],
+            "type": "any"
+          }
+        ],
+        "result": {
+          "type": "string"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "time.now_ns",
       "decl": {
         "result": {
           "type": "number"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "time.parse_duration_ns",
@@ -3485,11 +4416,6 @@
       "decl": {
         "args": [
           {
-            "of": [
-              {
-                "type": "any"
-              }
-            ],
             "type": "any"
           }
         ],
@@ -3518,6 +4444,20 @@
             "type": "any"
           },
           "type": "set"
+        },
+        "type": "function"
+      }
+    },
+    {
+      "name": "units.parse",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "type": "number"
         },
         "type": "function"
       }
@@ -3643,6 +4583,28 @@
       }
     },
     {
+      "name": "uuid.parse",
+      "decl": {
+        "args": [
+          {
+            "type": "string"
+          }
+        ],
+        "result": {
+          "dynamic": {
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "any"
+            }
+          },
+          "type": "object"
+        },
+        "type": "function"
+      }
+    },
+    {
       "name": "uuid.rfc4122",
       "decl": {
         "args": [
@@ -3654,7 +4616,8 @@
           "type": "string"
         },
         "type": "function"
-      }
+      },
+      "nondeterministic": true
     },
     {
       "name": "walk",
@@ -3726,6 +4689,9 @@
     }
   ],
   "future_keywords": [
+    "contains",
+    "every",
+    "if",
     "in"
   ],
   "wasm_abi_versions": [
@@ -3737,5 +4703,8 @@
       "version": 1,
       "minor_version": 2
     }
+  ],
+  "features": [
+    "rule_head_ref_string_prefixes"
   ]
 }

@@ -7,12 +7,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
-	"io/ioutil"
+	"io"
 	"os"
 	"strings"
 	"testing"
 
-	"github.com/open-policy-agent/opa/test/authz"
 	testAuthz "github.com/open-policy-agent/opa/test/authz"
 	"github.com/open-policy-agent/opa/test/e2e"
 	"github.com/open-policy-agent/opa/util"
@@ -24,7 +23,8 @@ func TestMain(m *testing.M) {
 	flag.Parse()
 
 	testServerParams := e2e.NewAPIServerTestParams()
-
+	disk, cleanup := diskStorage()
+	testServerParams.DiskStorage = disk
 	var err error
 	testRuntime, err = e2e.NewTestRuntime(testServerParams)
 	if err != nil {
@@ -32,6 +32,11 @@ func TestMain(m *testing.M) {
 	}
 
 	errc := testRuntime.RunTests(m)
+	if cleanup != nil {
+		if err := cleanup(); err != nil {
+			panic(err)
+		}
+	}
 	os.Exit(errc)
 }
 
@@ -77,7 +82,7 @@ func runAuthzBenchmark(b *testing.B, mode testAuthz.InputMode, numPaths int) {
 		b.Fatal(err)
 	}
 
-	queryPath := strings.Replace(authz.AllowQuery, ".", "/", -1)
+	queryPath := strings.Replace(testAuthz.AllowQuery, ".", "/", -1)
 	url := testRuntime.URL() + "/v1/" + queryPath
 
 	input, expected := testAuthz.GenerateInput(profile, mode)
@@ -101,7 +106,7 @@ func runAuthzBenchmark(b *testing.B, mode testAuthz.InputMode, numPaths int) {
 		}
 		b.StopTimer()
 
-		body, err := ioutil.ReadAll(resp)
+		body, err := io.ReadAll(resp)
 		if err != nil {
 			b.Fatalf("unexpected error reading response body: %s", err)
 		}

@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/open-policy-agent/opa/internal/report"
 	"github.com/open-policy-agent/opa/logging"
+	testLog "github.com/open-policy-agent/opa/logging/test"
 	"github.com/open-policy-agent/opa/server"
 
 	"github.com/open-policy-agent/opa/ast"
@@ -28,31 +28,6 @@ import (
 	"github.com/open-policy-agent/opa/util"
 	"github.com/open-policy-agent/opa/util/test"
 )
-
-func TestWatchPaths(t *testing.T) {
-
-	fs := map[string]string{
-		"/foo/bar/baz.json": "true",
-	}
-
-	expected := []string{
-		".", "/foo", "/foo/bar",
-	}
-
-	test.WithTempFS(fs, func(rootDir string) {
-		paths, err := getWatchPaths([]string{"prefix:" + rootDir + "/foo"})
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-		result := []string{}
-		for _, p := range paths {
-			result = append(result, filepath.Clean(strings.TrimPrefix(p, rootDir)))
-		}
-		if !reflect.DeepEqual(expected, result) {
-			t.Fatalf("Expected %q but got: %q", expected, result)
-		}
-	})
-}
 
 func TestRuntimeProcessWatchEvents(t *testing.T) {
 	testRuntimeProcessWatchEvents(t, false)
@@ -104,7 +79,7 @@ func testRuntimeProcessWatchEvents(t *testing.T, asBundle bool) {
 			"hello": "world-2",
 		}
 
-		if err := ioutil.WriteFile(path.Join(rootDir, "some/data.json"), util.MustMarshalJSON(expected), 0644); err != nil {
+		if err := os.WriteFile(path.Join(rootDir, "some/data.json"), util.MustMarshalJSON(expected), 0644); err != nil {
 			panic(err)
 		}
 
@@ -194,7 +169,7 @@ func testRuntimeProcessWatchEventPolicyError(t *testing.T, asBundle bool) {
 
 		default x = 2`)
 
-		if err := ioutil.WriteFile(path.Join(rootDir, "y.rego"), newModule, 0644); err != nil {
+		if err := os.WriteFile(path.Join(rootDir, "y.rego"), newModule, 0644); err != nil {
 			t.Fatal(err)
 		}
 
@@ -305,6 +280,105 @@ func TestCheckOPAUpdateLoopWithNewUpdate(t *testing.T) {
 	testCheckOPAUpdateLoop(t, baseURL, "OPA is out of date.")
 }
 
+func TestRuntimeWithAuthzSchemaVerification(t *testing.T) {
+	ctx := context.Background()
+
+	fs := map[string]string{
+		"test/authz.rego": `package system.authz
+
+		default allow := false
+
+		allow {
+          input.identity = "foo"
+		}`,
+	}
+
+	test.WithTempFS(fs, func(rootDir string) {
+		rootDir = filepath.Join(rootDir, "test")
+
+		params := NewParams()
+		params.Paths = []string{rootDir}
+		params.Authorization = server.AuthorizationBasic
+
+		_, err := NewRuntime(ctx, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		badModule := []byte(`package system.authz
+
+		default allow := false
+
+		allow {
+           input.identty = "foo"
+		}`)
+
+		if err := os.WriteFile(path.Join(rootDir, "authz.rego"), badModule, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = NewRuntime(ctx, params)
+		if err == nil {
+			t.Fatal("Expected error but got nil")
+		}
+
+		if !strings.Contains(err.Error(), "undefined ref: input.identty") {
+			t.Errorf("Expected error \"%v\" not found", "undefined ref: input.identty")
+		}
+
+		// no verification checks
+		params.Authorization = server.AuthorizationOff
+		_, err = NewRuntime(ctx, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestRuntimeWithAuthzSchemaVerificationTransitive(t *testing.T) {
+	ctx := context.Background()
+
+	fs := map[string]string{
+		"test/authz.rego": `package system.authz
+
+		default allow := false
+
+        is_secret :=  input.identty == "secret"
+
+        # even though "is_secret" is called via 2 paths, there should be only one resulting error
+        # 1-step dependency
+        allow {
+          is_secret
+        }
+
+        # 2-step dependency
+        allow {
+          allow2
+        }
+
+        allow2 {
+          is_secret
+        }`,
+	}
+
+	test.WithTempFS(fs, func(rootDir string) {
+		rootDir = filepath.Join(rootDir, "test")
+
+		params := NewParams()
+		params.Paths = []string{rootDir}
+		params.Authorization = server.AuthorizationBasic
+
+		_, err := NewRuntime(ctx, params)
+		if err == nil {
+			t.Fatal("Expected error but got nil")
+		}
+
+		if !strings.Contains(err.Error(), "undefined ref: input.identty") {
+			t.Errorf("Expected error \"%v\" not found", "undefined ref: input.identty")
+		}
+	})
+}
+
 func TestCheckAuthIneffective(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Millisecond)
 	defer cancel() // NOTE(sr): The timeout will have been reached by the time `done` is closed.
@@ -318,7 +392,7 @@ func TestCheckAuthIneffective(t *testing.T) {
 	logger.SetOutput(stdout)
 
 	params.Logger = logger
-	params.Addrs = &[]string{":0"}
+	params.Addrs = &[]string{"localhost:0"}
 	params.GracefulShutdownPeriod = 1
 	rt, err := NewRuntime(ctx, params)
 	if err != nil {
@@ -346,7 +420,7 @@ func TestServerInitialized(t *testing.T) {
 
 	params := NewParams()
 	params.Output = &output
-	params.Addrs = &[]string{":0"}
+	params.Addrs = &[]string{"localhost:0"}
 	params.GracefulShutdownPeriod = 1
 	params.Logger = logging.NewNoOpLogger()
 
@@ -369,6 +443,51 @@ func TestServerInitialized(t *testing.T) {
 		t.Fatal("expected ServerInitializedChannel to be closed")
 	}
 }
+func TestUrlPathToConfigOverride(t *testing.T) {
+	params := NewParams()
+	params.Paths = []string{"https://www.example.com/bundles/bundle.tar.gz"}
+	ctx := context.Background()
+	rt, err := NewRuntime(ctx, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var serviceConf map[string]interface{}
+	if err = json.Unmarshal(rt.Manager.Config.Services, &serviceConf); err != nil {
+		t.Fatal(err)
+	}
+
+	cliService, ok := serviceConf["cli1"].(map[string]interface{})
+	if !ok {
+		t.Fatal("excpected service configuration for 'cli1' service")
+	}
+
+	if cliService["url"] != "https://www.example.com" {
+		t.Error("expected cli1 service url value: 'https://www.example.com'")
+	}
+
+	var bundleConf map[string]interface{}
+	if err = json.Unmarshal(rt.Manager.Config.Bundles, &bundleConf); err != nil {
+		t.Fatal(err)
+	}
+
+	cliBundle, ok := bundleConf["cli1"].(map[string]interface{})
+	if !ok {
+		t.Fatal("excpected bundle configuration for 'cli1' bundle")
+	}
+
+	if cliBundle["service"] != "cli1" {
+		t.Error("expected cli1 bundle service value: 'cli1'")
+	}
+
+	if cliBundle["resource"] != "/bundles/bundle.tar.gz" {
+		t.Error("expected cli1 bundle resource value: 'bundles/bundle.tar.gz'")
+	}
+
+	if cliBundle["persist"] != true {
+		t.Error("expected cli1 bundle persist value: true")
+	}
+}
 
 func getTestServer(update interface{}, statusCode int) (baseURL string, teardownFn func()) {
 	mux := http.NewServeMux()
@@ -385,7 +504,7 @@ func getTestServer(update interface{}, statusCode int) (baseURL string, teardown
 
 func testCheckOPAUpdate(t *testing.T, url string, expected *report.DataResponse) {
 	t.Helper()
-	os.Setenv("OPA_TELEMETRY_SERVICE_URL", url)
+	t.Setenv("OPA_TELEMETRY_SERVICE_URL", url)
 
 	ctx := context.Background()
 	rt := getTestRuntime(ctx, t, logging.NewNoOpLogger())
@@ -398,7 +517,7 @@ func testCheckOPAUpdate(t *testing.T, url string, expected *report.DataResponse)
 
 func testCheckOPAUpdateLoop(t *testing.T, url, expected string) {
 	t.Helper()
-	os.Setenv("OPA_TELEMETRY_SERVICE_URL", url)
+	t.Setenv("OPA_TELEMETRY_SERVICE_URL", url)
 
 	ctx := context.Background()
 
@@ -433,4 +552,54 @@ func getTestRuntime(ctx context.Context, t *testing.T, logger logging.Logger) *R
 		t.Fatalf("Unexpected error %v", err)
 	}
 	return rt
+}
+
+func TestAddrWarningMessage(t *testing.T) {
+	testCases := []struct {
+		name          string
+		addrSetByUser bool
+		containsMsg   bool
+	}{
+		{"WarningMessage", false, true},
+		{"NoWarningMessage", true, false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Millisecond)
+			defer cancel()
+
+			params := NewParams()
+
+			logger := testLog.New()
+			logLevel := logging.Info
+
+			params.Logger = logger
+			params.Addrs = &[]string{"localhost:8181"}
+			params.AddrSetByUser = tc.addrSetByUser
+			params.GracefulShutdownPeriod = 1
+			rt, err := NewRuntime(ctx, params)
+			if err != nil {
+				t.Fatalf("Unexpected error %v", err)
+			}
+
+			done := make(chan struct{})
+			go func() {
+				rt.StartServer(ctx)
+				close(done)
+			}()
+			<-done
+
+			warning := " OPA is running on a public (0.0.0.0) network interface. Unless you intend to expose OPA outside of the host, binding to the localhost interface (--addr localhost:8181) is recommended. See https://www.openpolicyagent.org/docs/latest/security/#interface-binding"
+			containsWarning := strings.Contains(logger.Entries()[0].Message, warning)
+
+			if containsWarning != tc.containsMsg {
+				t.Fatal("Mismatch between OPA server displaying the interface warning message and user setting the server address")
+			}
+
+			if logger.GetLevel() != logLevel {
+				t.Fatalf("Expected log level to be: \"%v\" but got \"%v\"", logLevel, logger.GetLevel())
+			}
+		})
+	}
 }

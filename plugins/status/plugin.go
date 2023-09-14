@@ -12,7 +12,8 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/pkg/errors"
+	lstat "github.com/open-policy-agent/opa/plugins/logs/status"
+	prom "github.com/prometheus/client_golang/prometheus"
 
 	"github.com/open-policy-agent/opa/logging"
 	"github.com/open-policy-agent/opa/metrics"
@@ -31,32 +32,35 @@ type Logger interface {
 // UpdateRequestV1 represents the status update message that OPA sends to
 // remote HTTP endpoints.
 type UpdateRequestV1 struct {
-	Labels    map[string]string          `json:"labels"`
-	Bundle    *bundle.Status             `json:"bundle,omitempty"` // Deprecated: Use bulk `bundles` status updates instead
-	Bundles   map[string]*bundle.Status  `json:"bundles,omitempty"`
-	Discovery *bundle.Status             `json:"discovery,omitempty"`
-	Metrics   map[string]interface{}     `json:"metrics,omitempty"`
-	Plugins   map[string]*plugins.Status `json:"plugins,omitempty"`
+	Labels       map[string]string          `json:"labels"`
+	Bundle       *bundle.Status             `json:"bundle,omitempty"` // Deprecated: Use bulk `bundles` status updates instead
+	Bundles      map[string]*bundle.Status  `json:"bundles,omitempty"`
+	Discovery    *bundle.Status             `json:"discovery,omitempty"`
+	DecisionLogs *lstat.Status              `json:"decision_logs,omitempty"`
+	Metrics      map[string]interface{}     `json:"metrics,omitempty"`
+	Plugins      map[string]*plugins.Status `json:"plugins,omitempty"`
 }
 
 // Plugin implements status reporting. Updates can be triggered by the caller.
 type Plugin struct {
-	manager            *plugins.Manager
-	config             Config
-	bundleCh           chan bundle.Status // Deprecated: Use bulk bundle status updates instead
-	lastBundleStatus   *bundle.Status     // Deprecated: Use bulk bundle status updates instead
-	bulkBundleCh       chan map[string]*bundle.Status
-	lastBundleStatuses map[string]*bundle.Status
-	discoCh            chan bundle.Status
-	lastDiscoStatus    *bundle.Status
-	pluginStatusCh     chan map[string]*plugins.Status
-	lastPluginStatuses map[string]*plugins.Status
-	queryCh            chan chan *UpdateRequestV1
-	stop               chan chan struct{}
-	reconfig           chan interface{}
-	metrics            metrics.Metrics
-	logger             logging.Logger
-	trigger            chan trigger
+	manager                *plugins.Manager
+	config                 Config
+	bundleCh               chan bundle.Status // Deprecated: Use bulk bundle status updates instead
+	lastBundleStatus       *bundle.Status     // Deprecated: Use bulk bundle status updates instead
+	bulkBundleCh           chan map[string]*bundle.Status
+	lastBundleStatuses     map[string]*bundle.Status
+	discoCh                chan bundle.Status
+	lastDiscoStatus        *bundle.Status
+	pluginStatusCh         chan map[string]*plugins.Status
+	decisionLogsCh         chan lstat.Status
+	lastDecisionLogsStatus *lstat.Status
+	lastPluginStatuses     map[string]*plugins.Status
+	queryCh                chan chan *UpdateRequestV1
+	stop                   chan chan struct{}
+	reconfig               chan reconfigure
+	metrics                metrics.Metrics
+	logger                 logging.Logger
+	trigger                chan trigger
 }
 
 // Config contains configuration for the plugin.
@@ -65,7 +69,13 @@ type Config struct {
 	Service       string               `json:"service"`
 	PartitionName string               `json:"partition_name,omitempty"`
 	ConsoleLogs   bool                 `json:"console"`
+	Prometheus    bool                 `json:"prometheus"`
 	Trigger       *plugins.TriggerMode `json:"trigger,omitempty"` // trigger mode
+}
+
+type reconfigure struct {
+	config interface{}
+	done   chan struct{}
 }
 
 type trigger struct {
@@ -86,7 +96,7 @@ func (c *Config) validateAndInjectDefaults(services []string, pluginsList []stri
 		if !found {
 			return fmt.Errorf("invalid plugin name %q in status", *c.Plugin)
 		}
-	} else if c.Service == "" && len(services) != 0 && !c.ConsoleLogs {
+	} else if c.Service == "" && len(services) != 0 && !(c.ConsoleLogs || c.Prometheus) {
 		// For backwards compatibility allow defaulting to the first
 		// service listed, but only if console logging is disabled. If enabled
 		// we can't tell if the deployer wanted to use only console logs or
@@ -107,14 +117,9 @@ func (c *Config) validateAndInjectDefaults(services []string, pluginsList []stri
 		}
 	}
 
-	// If a plugin or service wasn't found, and console logging isn't enabled.
-	if c.Plugin == nil && c.Service == "" && !c.ConsoleLogs {
-		return fmt.Errorf("invalid status config, must have a `service`, `plugin`, or `console` logging specified")
-	}
-
 	t, err := plugins.ValidateAndInjectDefaultsForTriggerMode(trigger, c.Trigger)
 	if err != nil {
-		return errors.Wrap(err, "invalid status config")
+		return fmt.Errorf("invalid status config: %w", err)
 	}
 	c.Trigger = t
 
@@ -176,6 +181,11 @@ func (b *ConfigBuilder) Parse() (*Config, error) {
 		return nil, err
 	}
 
+	if parsedConfig.Plugin == nil && parsedConfig.Service == "" && len(b.services) == 0 && !parsedConfig.ConsoleLogs && !parsedConfig.Prometheus {
+		// Nothing to validate or inject
+		return nil, nil
+	}
+
 	if err := parsedConfig.validateAndInjectDefaults(b.services, b.plugins, b.trigger); err != nil {
 		return nil, err
 	}
@@ -191,8 +201,9 @@ func New(parsedConfig *Config, manager *plugins.Manager) *Plugin {
 		bundleCh:       make(chan bundle.Status),
 		bulkBundleCh:   make(chan map[string]*bundle.Status),
 		discoCh:        make(chan bundle.Status),
+		decisionLogsCh: make(chan lstat.Status),
 		stop:           make(chan chan struct{}),
-		reconfig:       make(chan interface{}),
+		reconfig:       make(chan reconfigure),
 		pluginStatusCh: make(chan map[string]*plugins.Status),
 		queryCh:        make(chan chan *UpdateRequestV1),
 		logger:         manager.Logger().WithFields(map[string]interface{}{"plugin": Name}),
@@ -231,11 +242,41 @@ func (p *Plugin) Start(ctx context.Context) error {
 	// to prevent blocking threads pushing the plugin updates.
 	p.manager.RegisterPluginStatusListener(Name, p.UpdatePluginStatus)
 
+	if p.config.Prometheus {
+		p.registerAll()
+	}
+
 	// Set the status plugin's status to OK now that everything is registered and
 	// the loop is running. This will trigger an update on the listener with the
 	// current status of all the other plugins too.
 	p.manager.UpdatePluginStatus(Name, &plugins.Status{State: plugins.StateOK})
 	return nil
+}
+
+func (p *Plugin) register(r prom.Registerer, cs ...prom.Collector) {
+	for _, c := range cs {
+		if err := r.Register(c); err != nil {
+			p.logger.Error("Status metric failed to register on prometheus :%v.", err)
+		}
+	}
+}
+
+func (p *Plugin) registerAll() {
+	if p.manager.PrometheusRegister() != nil {
+		p.register(p.manager.PrometheusRegister(), allCollectors...)
+	}
+}
+
+func (p *Plugin) unregister(r prom.Registerer, cs ...prom.Collector) {
+	for _, c := range cs {
+		r.Unregister(c)
+	}
+}
+
+func (p *Plugin) unregisterAll() {
+	if p.manager.PrometheusRegister() != nil {
+		p.unregister(p.manager.PrometheusRegister(), allCollectors...)
+	}
 }
 
 // Stop stops the plugin.
@@ -264,6 +305,11 @@ func (p *Plugin) UpdateDiscoveryStatus(status bundle.Status) {
 	p.discoCh <- status
 }
 
+// UpdateDecisionLogsStatus notifies the plugin that status of a decision log upload event.
+func (p *Plugin) UpdateDecisionLogsStatus(status lstat.Status) {
+	p.decisionLogsCh <- status
+}
+
 // UpdatePluginStatus notifies the plugin that a plugin status was updated.
 func (p *Plugin) UpdatePluginStatus(status map[string]*plugins.Status) {
 	p.pluginStatusCh <- status
@@ -271,7 +317,9 @@ func (p *Plugin) UpdatePluginStatus(status map[string]*plugins.Status) {
 
 // Reconfigure notifies the plugin with a new configuration.
 func (p *Plugin) Reconfigure(_ context.Context, config interface{}) {
-	p.reconfig <- config
+	done := make(chan struct{})
+	p.reconfig <- reconfigure{config: config, done: done}
+	<-done
 }
 
 // Snapshot returns the current status.
@@ -283,7 +331,7 @@ func (p *Plugin) Snapshot() *UpdateRequestV1 {
 }
 
 // Trigger can be used to control when the plugin attempts to upload
-//status in manual triggering mode.
+// status in manual triggering mode.
 func (p *Plugin) Trigger(ctx context.Context) error {
 	done := make(chan error)
 	p.trigger <- trigger{ctx: ctx, done: done}
@@ -343,8 +391,19 @@ func (p *Plugin) loop() {
 					p.logger.Info("Status update sent successfully in response to discovery update.")
 				}
 			}
-		case newConfig := <-p.reconfig:
-			p.reconfigure(newConfig)
+		case status := <-p.decisionLogsCh:
+			p.lastDecisionLogsStatus = &status
+			if *p.config.Trigger == plugins.TriggerPeriodic {
+				err := p.oneShot(ctx)
+				if err != nil {
+					p.logger.Error("%v.", err)
+				} else {
+					p.logger.Info("Status update sent successfully in response to decision log update.")
+				}
+			}
+		case update := <-p.reconfig:
+			p.reconfigure(update.config)
+			update.done <- struct{}{}
 		case respCh := <-p.queryCh:
 			respCh <- p.snapshot()
 		case update := <-p.trigger:
@@ -377,6 +436,10 @@ func (p *Plugin) oneShot(ctx context.Context) error {
 		}
 	}
 
+	if p.config.Prometheus {
+		updatePrometheusMetrics(req)
+	}
+
 	if p.config.Plugin != nil {
 		proxy, ok := p.manager.Plugin(*p.config.Plugin).(Logger)
 		if !ok {
@@ -391,20 +454,13 @@ func (p *Plugin) oneShot(ctx context.Context) error {
 			Do(ctx, "POST", fmt.Sprintf("/status/%v", p.config.PartitionName))
 
 		if err != nil {
-			return errors.Wrap(err, "Status update failed")
+			return fmt.Errorf("Status update failed: %w", err)
 		}
 
 		defer util.Close(resp)
 
-		switch resp.StatusCode {
-		case http.StatusOK:
-			return nil
-		case http.StatusNotFound:
-			return fmt.Errorf("status update failed, server replied with not found")
-		case http.StatusUnauthorized:
-			return fmt.Errorf("status update failed, server replied with not authorized")
-		default:
-			return fmt.Errorf("status update failed, server replied with HTTP %v", resp.StatusCode)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("status update failed, server replied with HTTP %v %v", resp.StatusCode, http.StatusText(resp.StatusCode))
 		}
 	}
 	return nil
@@ -419,17 +475,25 @@ func (p *Plugin) reconfigure(config interface{}) {
 	}
 
 	p.logger.Info("Status reporter configuration changed.")
+
+	if newConfig.Prometheus && !p.config.Prometheus {
+		p.registerAll()
+	} else if !newConfig.Prometheus && p.config.Prometheus {
+		p.unregisterAll()
+	}
+
 	p.config = *newConfig
 }
 
 func (p *Plugin) snapshot() *UpdateRequestV1 {
 
 	s := &UpdateRequestV1{
-		Labels:    p.manager.Labels(),
-		Discovery: p.lastDiscoStatus,
-		Bundle:    p.lastBundleStatus,
-		Bundles:   p.lastBundleStatuses,
-		Plugins:   p.lastPluginStatuses,
+		Labels:       p.manager.Labels(),
+		Discovery:    p.lastDiscoStatus,
+		DecisionLogs: p.lastDecisionLogsStatus,
+		Bundle:       p.lastBundleStatus,
+		Bundles:      p.lastBundleStatuses,
+		Plugins:      p.lastPluginStatuses,
 	}
 
 	if p.metrics != nil {
@@ -453,4 +517,31 @@ func (p *Plugin) logUpdate(update *UpdateRequestV1) error {
 		"type": "openpolicyagent.org/status",
 	}).Info("Status Log")
 	return nil
+}
+
+func updatePrometheusMetrics(u *UpdateRequestV1) {
+	pluginStatus.Reset()
+	for name, plugin := range u.Plugins {
+		pluginStatus.WithLabelValues(name, string(plugin.State)).Set(1)
+	}
+	lastSuccessfulActivation.Reset()
+	for _, bundle := range u.Bundles {
+		if bundle.Code == "" && !bundle.LastSuccessfulActivation.IsZero() {
+			loaded.WithLabelValues(bundle.Name).Inc()
+		} else {
+			failLoad.WithLabelValues(bundle.Name, bundle.Code, bundle.Message).Inc()
+		}
+		lastSuccessfulActivation.WithLabelValues(bundle.Name, bundle.ActiveRevision).Set(float64(bundle.LastSuccessfulActivation.UnixNano()))
+		lastSuccessfulDownload.WithLabelValues(bundle.Name).Set(float64(bundle.LastSuccessfulDownload.UnixNano()))
+		lastSuccessfulRequest.WithLabelValues(bundle.Name).Set(float64(bundle.LastSuccessfulRequest.UnixNano()))
+		lastRequest.WithLabelValues(bundle.Name).Set(float64(bundle.LastRequest.UnixNano()))
+		if bundle.Metrics != nil {
+			for stage, metric := range bundle.Metrics.All() {
+				switch stage {
+				case "timer_bundle_request_ns", "timer_rego_data_parse_ns", "timer_rego_module_parse_ns", "timer_rego_module_compile_ns", "timer_rego_load_bundles_ns":
+					bundleLoadDuration.WithLabelValues(bundle.Name, stage).Observe(float64(metric.(int64)))
+				}
+			}
+		}
+	}
 }

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"reflect"
 	"testing"
 
@@ -146,4 +147,386 @@ func TestExecBundleFlag(t *testing.T) {
 		}
 
 	})
+}
+
+func TestInvalidConfig(t *testing.T) {
+	var buf bytes.Buffer
+	params := exec.NewParams(&buf)
+	params.Fail = true
+	params.FailDefined = true
+
+	err := exec.Exec(context.TODO(), nil, params)
+	if err == nil || err.Error() != "specify --fail or --fail-defined but not both" {
+		t.Fatalf("Expected error '%s' but got '%s'", "specify --fail or --fail-defined but not both", err.Error())
+	}
+}
+
+func TestInvalidConfigAllThree(t *testing.T) {
+	var buf bytes.Buffer
+	params := exec.NewParams(&buf)
+	params.Fail = true
+	params.FailDefined = true
+	params.FailNonEmpty = true
+
+	err := exec.Exec(context.TODO(), nil, params)
+	if err == nil || err.Error() != "specify --fail or --fail-defined but not both" {
+		t.Fatalf("Expected error '%s' but got '%s'", "specify --fail or --fail-defined but not both", err.Error())
+	}
+}
+
+func TestInvalidConfigNonEmptyAndFail(t *testing.T) {
+	var buf bytes.Buffer
+	params := exec.NewParams(&buf)
+	params.FailNonEmpty = true
+	params.Fail = true
+
+	err := exec.Exec(context.TODO(), nil, params)
+	if err == nil || err.Error() != "specify --fail-non-empty or --fail but not both" {
+		t.Fatalf("Expected error '%s' but got '%s'", "specify --fail-non-empty or --fail but not both", err.Error())
+	}
+}
+
+func TestInvalidConfigNonEmptyAndFailDefined(t *testing.T) {
+	var buf bytes.Buffer
+	params := exec.NewParams(&buf)
+	params.FailNonEmpty = true
+	params.FailDefined = true
+
+	err := exec.Exec(context.TODO(), nil, params)
+	if err == nil || err.Error() != "specify --fail-non-empty or --fail-defined but not both" {
+		t.Fatalf("Expected error '%s' but got '%s'", "specify --fail-non-empty or --fail-defined but not both", err.Error())
+	}
+}
+
+func TestFailFlagCases(t *testing.T) {
+
+	var tests = []struct {
+		description  string
+		files        map[string]string
+		decision     string
+		expectError  bool
+		expected     interface{}
+		fail         bool
+		failDefined  bool
+		failNonEmpty bool
+	}{
+		{
+			description: "--fail-defined with undefined result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package system
+
+		test_fun := x {
+			x = false
+			x
+		}
+
+		undefined_test {
+			test_fun
+		}`,
+			},
+			expectError: false,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"error": {
+				"code": "opa_undefined_error",
+				"message": "/system/main decision was undefined"
+			  }
+		}]}`)),
+			failDefined: true,
+		},
+		{
+			description: "--fail-defined with populated result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package system
+
+		main["hello"]`,
+			},
+			decision:    "",
+			expectError: true,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": ["hello"]
+		}]}`)),
+			failDefined: true,
+		},
+		{
+			description: "--fail-defined with true boolean result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.defined.flag
+
+               some_function {
+                       input.foo == 7
+               }
+
+               default fail_test := false
+               fail_test {
+                       some_function
+               }`,
+			},
+			decision:    "fail/defined/flag/fail_test",
+			expectError: true,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": true
+		}]}`)),
+			failDefined: true,
+		},
+		{
+			description: "--fail-defined with false boolean result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.defined.flag
+
+		default fail_test := false
+		fail_test {
+			false
+		}`,
+			},
+			decision:    "fail/defined/flag/fail_test",
+			expectError: true,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": false
+		}]}`)),
+			failDefined: true,
+		},
+		{
+			description: "--fail with undefined result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package system
+
+		test_fun := x {
+			x = false
+			x
+		}
+
+		undefined_test {
+			test_fun
+		}`,
+			},
+			expectError: true,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"error": {
+				"code": "opa_undefined_error",
+				"message": "/system/main decision was undefined"
+			  }
+		}]}`)),
+			fail: true,
+		},
+		{
+			description: "--fail with populated result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package system
+
+		main["hello"]`,
+			},
+			expectError: false,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": ["hello"]
+		}]}`)),
+			fail: true,
+		},
+		{
+			description: "--fail with true boolean result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.defined.flag
+
+               some_function {
+                       input.foo == 7
+               }
+
+               default fail_test := false
+               fail_test {
+                       some_function
+               }`,
+			},
+			decision:    "fail/defined/flag/fail_test",
+			expectError: false,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": true
+		}]}`)),
+			fail: true,
+		},
+		{
+			description: "--fail with false boolean result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.defined.flag
+
+		default fail_test := false
+		fail_test {
+			false
+		}`,
+			},
+			decision:    "fail/defined/flag/fail_test",
+			expectError: false,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": false
+		}]}`)),
+			fail: true,
+		},
+		{
+			description: "--fail-non-empty with undefined result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package system
+
+		test_fun := x {
+			x = false
+			x
+		}
+
+		undefined_test {
+			test_fun
+		}`,
+			},
+			expectError: false,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"error": {
+				"code": "opa_undefined_error",
+				"message": "/system/main decision was undefined"
+			  }
+		}]}`)),
+			failNonEmpty: true,
+		},
+		{
+			description: "--fail-non-empty with populated result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package system
+
+		main["hello"]`,
+			},
+			decision:    "",
+			expectError: true,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": ["hello"]
+		}]}`)),
+			failNonEmpty: true,
+		},
+		{
+			description: "--fail-non-empty with true boolean result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.non.empty.flag
+
+               some_function {
+                       input.foo == 7
+               }
+
+               default fail_test := false
+               fail_test {
+                       some_function
+               }`,
+			},
+			decision:    "fail/non/empty/flag/fail_test",
+			expectError: true,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": true
+		}]}`)),
+			failNonEmpty: true,
+		},
+		{
+			description: "--fail-non-empty with false boolean result",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.non.empty.flag
+
+		default fail_test := false
+		fail_test {
+			false
+		}`,
+			},
+			decision:    "fail/non/empty/flag/fail_test",
+			expectError: true,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": false
+		}]}`)),
+			failNonEmpty: true,
+		},
+		{
+			description: "--fail-non-empty with an empty array",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.non.empty.flag
+
+		default fail_test := ["something", "hello"]
+		fail_test := [] if {
+			input.foo == 7
+		}`,
+			},
+			decision:    "fail/non/empty/flag/fail_test",
+			expectError: false,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": []
+		}]}`)),
+			failNonEmpty: true,
+		},
+		{
+			description: "--fail-non-empty for an empty set coming from a partial rule",
+			files: map[string]string{
+				"files/test.json": `{"foo": 7}`,
+				"bundle/x.rego": `package fail.non.empty.flag
+
+		fail_test[message] {
+		   false
+		   message := "not gonna happen"
+		}`,
+			},
+			decision:    "fail/non/empty/flag/fail_test",
+			expectError: false,
+			expected: util.MustUnmarshalJSON([]byte(`{"result": [{
+			"path": "/files/test.json",
+			"result": []
+		}]}`)),
+			failNonEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.description, func(t *testing.T) {
+			test.WithTempFS(tt.files, func(dir string) {
+				var buf bytes.Buffer
+				params := exec.NewParams(&buf)
+				_ = params.OutputFormat.Set("json")
+				params.BundlePaths = []string{dir + "/bundle/"}
+				params.Paths = append(params.Paths, dir+"/files/")
+				if tt.decision != "" {
+					params.Decision = tt.decision
+				}
+				params.FailDefined = tt.failDefined
+				params.Fail = tt.fail
+				params.FailNonEmpty = tt.failNonEmpty
+
+				err := runExec(params)
+				if err != nil && !tt.expectError {
+					t.Fatal("unexpected error in test")
+				}
+				if err == nil && tt.expectError {
+					t.Fatal("expected error, but none occurred in test")
+				}
+
+				output := util.MustUnmarshalJSON(bytes.ReplaceAll(buf.Bytes(), []byte(dir), nil))
+
+				if !reflect.DeepEqual(output, tt.expected) {
+					t.Errorf("Expected %v, got: %v", tt.expected, output)
+				}
+			})
+		})
+	}
 }

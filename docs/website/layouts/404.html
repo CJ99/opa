@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="{{ site.LanguageCode }}">
   <head>
     <link rel="icon" type="image/png" href="/favicon.png"/>
     <title>
-      404 - {{ block "title" . }}{{ site.Title }}{{ end }}
+      404 - {{ define "title" }}{{ site.Title }}{{ end }}
     </title>
     {{ partial "css.html" . }}
     <style>
@@ -20,12 +19,13 @@
         color: #008a98;
       }
 
-     body,html {
-      height: 100%;
-      overflow: hidden;}
+      body,html {
+        height: 100%;
+        overflow: hidden;
+      }
 
-      .headline--wave--fg { bottom: 200px;}
-      .headline--wave--bg { bottom: 230px;}
+      .headline--wave--fg { bottom: 200px; }
+      .headline--wave--bg { bottom: 230px; }
 
       h1,p {
         text-align: center;

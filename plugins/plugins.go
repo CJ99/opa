@@ -11,12 +11,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/gorilla/mux"
 	"github.com/open-policy-agent/opa/ast"
 	"github.com/open-policy-agent/opa/bundle"
 	"github.com/open-policy-agent/opa/config"
+	"github.com/open-policy-agent/opa/hooks"
 	bundleUtils "github.com/open-policy-agent/opa/internal/bundle"
 	cfg "github.com/open-policy-agent/opa/internal/config"
+	"github.com/open-policy-agent/opa/internal/errors"
 	initload "github.com/open-policy-agent/opa/internal/runtime/init"
 	"github.com/open-policy-agent/opa/keys"
 	"github.com/open-policy-agent/opa/loader"
@@ -26,6 +31,7 @@ import (
 	"github.com/open-policy-agent/opa/storage"
 	"github.com/open-policy-agent/opa/topdown/cache"
 	"github.com/open-policy-agent/opa/topdown/print"
+	"github.com/open-policy-agent/opa/tracing"
 )
 
 // Factory defines the interface OPA uses to instantiate your plugin.
@@ -36,11 +42,11 @@ import (
 // configuration blob. If your plugin has not been configured, your
 // factory will not be invoked.
 //
-//   plugins:
-//     my_plugin1:
-//       some_key: foo
-//     # my_plugin2:
-//     #   some_key2: bar
+//	plugins:
+//	  my_plugin1:
+//	    some_key: foo
+//	  # my_plugin2:
+//	  #   some_key2: bar
 //
 // If OPA was started with the configuration above and received two
 // calls to runtime.RegisterPlugins (one with NAME "my_plugin1" and
@@ -169,7 +175,7 @@ type Manager struct {
 	services                     map[string]rest.Client
 	keys                         map[string]*keys.Config
 	plugins                      []namedplugin
-	registeredTriggers           []func(txn storage.Transaction)
+	registeredTriggers           []func(storage.Transaction)
 	mtx                          sync.Mutex
 	pluginStatus                 map[string]*Status
 	pluginStatusListeners        map[string]StatusListener
@@ -187,6 +193,12 @@ type Manager struct {
 	printHook                    print.Hook
 	enablePrintStatements        bool
 	router                       *mux.Router
+	prometheusRegister           prometheus.Registerer
+	tracerProvider               *trace.TracerProvider
+	distributedTacingOpts        tracing.Options
+	registeredNDCacheTriggers    []func(bool)
+	bootstrapConfigLabels        map[string]string
+	hooks                        hooks.Hooks
 }
 
 type managerContextKey string
@@ -344,6 +356,34 @@ func WithRouter(r *mux.Router) func(*Manager) {
 	}
 }
 
+// WithPrometheusRegister sets the passed prometheus.Registerer to be used by plugins
+func WithPrometheusRegister(prometheusRegister prometheus.Registerer) func(*Manager) {
+	return func(m *Manager) {
+		m.prometheusRegister = prometheusRegister
+	}
+}
+
+// WithTracerProvider sets the passed *trace.TracerProvider to be used by plugins
+func WithTracerProvider(tracerProvider *trace.TracerProvider) func(*Manager) {
+	return func(m *Manager) {
+		m.tracerProvider = tracerProvider
+	}
+}
+
+// WithDistributedTracingOpts sets the options to be used by distributed tracing.
+func WithDistributedTracingOpts(tr tracing.Options) func(*Manager) {
+	return func(m *Manager) {
+		m.distributedTacingOpts = tr
+	}
+}
+
+// WithHooks allows passing hooks to the plugin manager.
+func WithHooks(hs hooks.Hooks) func(*Manager) {
+	return func(m *Manager) {
+		m.hooks = hs
+	}
+}
+
 // New creates a new Manager using config.
 func New(raw []byte, id string, store storage.Store, opts ...func(*Manager)) (*Manager, error) {
 
@@ -352,26 +392,15 @@ func New(raw []byte, id string, store storage.Store, opts ...func(*Manager)) (*M
 		return nil, err
 	}
 
-	keys, err := keys.ParseKeysConfig(parsedConfig.Keys)
-	if err != nil {
-		return nil, err
-	}
-
-	interQueryBuiltinCacheConfig, err := cache.ParseCachingConfig(parsedConfig.Caching)
-	if err != nil {
-		return nil, err
-	}
-
 	m := &Manager{
-		Store:                        store,
-		Config:                       parsedConfig,
-		ID:                           id,
-		keys:                         keys,
-		pluginStatus:                 map[string]*Status{},
-		pluginStatusListeners:        map[string]StatusListener{},
-		maxErrors:                    -1,
-		interQueryBuiltinCacheConfig: interQueryBuiltinCacheConfig,
-		serverInitialized:            make(chan struct{}),
+		Store:                 store,
+		Config:                parsedConfig,
+		ID:                    id,
+		pluginStatus:          map[string]*Status{},
+		pluginStatusListeners: map[string]StatusListener{},
+		maxErrors:             -1,
+		serverInitialized:     make(chan struct{}),
+		bootstrapConfigLabels: parsedConfig.Labels,
 	}
 
 	for _, f := range opts {
@@ -386,19 +415,42 @@ func New(raw []byte, id string, store storage.Store, opts ...func(*Manager)) (*M
 		m.consoleLogger = logging.New()
 	}
 
-	serviceOpts := cfg.ServiceOptions{
-		Raw:        parsedConfig.Services,
-		AuthPlugin: m.AuthPlugin,
-		Keys:       keys,
-		Logger:     m.logger,
-	}
-
-	services, err := cfg.ParseServicesConfig(serviceOpts)
+	m.hooks.Each(func(h hooks.Hook) {
+		if f, ok := h.(hooks.ConfigHook); ok {
+			if c, e := f.OnConfig(context.Background(), parsedConfig); e != nil {
+				err = errors.Join(err, e)
+			} else {
+				parsedConfig = c
+			}
+		}
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	m.services = services
+	// do after options and overrides
+	m.keys, err = keys.ParseKeysConfig(parsedConfig.Keys)
+	if err != nil {
+		return nil, err
+	}
+
+	m.interQueryBuiltinCacheConfig, err = cache.ParseCachingConfig(parsedConfig.Caching)
+	if err != nil {
+		return nil, err
+	}
+
+	serviceOpts := cfg.ServiceOptions{
+		Raw:                   parsedConfig.Services,
+		AuthPlugin:            m.AuthPlugin,
+		Keys:                  m.keys,
+		Logger:                m.logger,
+		DistributedTacingOpts: m.distributedTacingOpts,
+	}
+
+	m.services, err = cfg.ParseServicesConfig(serviceOpts)
+	if err != nil {
+		return nil, err
+	}
 
 	return m, nil
 }
@@ -536,7 +588,7 @@ func (m *Manager) GetRouter() *mux.Router {
 
 // RegisterCompilerTrigger registers for change notifications when the compiler
 // is changed.
-func (m *Manager) RegisterCompilerTrigger(f func(txn storage.Transaction)) {
+func (m *Manager) RegisterCompilerTrigger(f func(storage.Transaction)) {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 	m.registeredTriggers = append(m.registeredTriggers, f)
@@ -615,14 +667,20 @@ func (m *Manager) Stop(ctx context.Context) {
 	for i := range toStop {
 		toStop[i].Stop(ctx)
 	}
+	if c, ok := m.Store.(interface{ Close(context.Context) error }); ok {
+		if err := c.Close(ctx); err != nil {
+			m.logger.Error("Error closing store: %v", err)
+		}
+	}
 }
 
 // Reconfigure updates the configuration on the manager.
 func (m *Manager) Reconfigure(config *config.Config) error {
 	opts := cfg.ServiceOptions{
-		Raw:        config.Services,
-		AuthPlugin: m.AuthPlugin,
-		Logger:     m.logger,
+		Raw:                   config.Services,
+		AuthPlugin:            m.AuthPlugin,
+		Logger:                m.logger,
+		DistributedTacingOpts: m.distributedTacingOpts,
 	}
 
 	keys, err := keys.ParseKeysConfig(config.Keys)
@@ -643,7 +701,21 @@ func (m *Manager) Reconfigure(config *config.Config) error {
 
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
-	config.Labels = m.Config.Labels // don't overwrite labels
+
+	// don't overwrite existing labels, only allow additions - always based on the boostrap config
+	if config.Labels == nil {
+		config.Labels = m.bootstrapConfigLabels
+	} else {
+		for label, value := range m.bootstrapConfigLabels {
+			config.Labels[label] = value
+		}
+	}
+
+	// don't erase persistence directory
+	if config.PersistenceDirectory == nil {
+		config.PersistenceDirectory = m.Config.PersistenceDirectory
+	}
+
 	m.Config = config
 	m.interQueryBuiltinCacheConfig = interQueryBuiltinCacheConfig
 	for name, client := range services {
@@ -656,6 +728,10 @@ func (m *Manager) Reconfigure(config *config.Config) error {
 
 	for _, trigger := range m.registeredCacheTriggers {
 		trigger(interQueryBuiltinCacheConfig)
+	}
+
+	for _, trigger := range m.registeredNDCacheTriggers {
+		trigger(config.NDBuiltinCache)
 	}
 
 	return nil
@@ -807,10 +883,6 @@ func (m *Manager) updateWasmResolversData(ctx context.Context, event storage.Tri
 	m.wasmResolversMtx.Lock()
 	defer m.wasmResolversMtx.Unlock()
 
-	if len(m.wasmResolvers) == 0 {
-		return nil
-	}
-
 	for _, resolver := range m.wasmResolvers {
 		for _, dataEvent := range event.Data {
 			var err error
@@ -892,4 +964,20 @@ func (m *Manager) RegisterCacheTrigger(trigger func(*cache.Config)) {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 	m.registeredCacheTriggers = append(m.registeredCacheTriggers, trigger)
+}
+
+// PrometheusRegister gets the prometheus.Registerer for this plugin manager.
+func (m *Manager) PrometheusRegister() prometheus.Registerer {
+	return m.prometheusRegister
+}
+
+// TracerProvider gets the *trace.TracerProvider for this plugin manager.
+func (m *Manager) TracerProvider() *trace.TracerProvider {
+	return m.tracerProvider
+}
+
+func (m *Manager) RegisterNDCacheTrigger(trigger func(bool)) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	m.registeredNDCacheTriggers = append(m.registeredNDCacheTriggers, trigger)
 }

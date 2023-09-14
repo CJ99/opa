@@ -65,10 +65,8 @@ func (e *ErrorV1) WithASTErrors(errors []*ast.Error) *ErrorV1 {
 
 // Bytes marshals e with indentation for readability.
 func (e *ErrorV1) Bytes() []byte {
-	if bs, err := json.MarshalIndent(e, "", "  "); err == nil {
-		return bs
-	}
-	return nil
+	bs, _ := json.MarshalIndent(e, "", "  ")
+	return bs
 }
 
 // Messages included in error responses.
@@ -80,6 +78,8 @@ const (
 	MsgUnauthorizedUndefinedError = "authorization policy missing or undefined"
 	MsgUnauthorizedError          = "request rejected by administrative policy"
 	MsgUndefinedError             = "document missing or undefined"
+	MsgMissingError               = "document missing"
+	MsgFoundUndefinedError        = "document undefined"
 	MsgPluginConfigError          = "error(s) occurred while configuring plugin(s)"
 )
 
@@ -149,6 +149,24 @@ type DataResponseV1 struct {
 	Explanation TraceV1       `json:"explanation,omitempty"`
 	Metrics     MetricsV1     `json:"metrics,omitempty"`
 	Result      *interface{}  `json:"result,omitempty"`
+	Warning     *Warning      `json:"warning,omitempty"`
+}
+
+// Warning models DataResponse warnings
+type Warning struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// Warning Codes
+const CodeAPIUsageWarn = "api_usage_warning"
+
+// Warning Messages
+const MsgInputKeyMissing = "'input' key missing from the request"
+
+// NewWarning returns a new Warning object
+func NewWarning(code, message string) *Warning {
+	return &Warning{Code: code, Message: message}
 }
 
 // MetricsV1 models a collection of performance metrics.
@@ -173,6 +191,7 @@ const (
 	ExplainFullV1  ExplainModeV1 = "full"
 	ExplainNotesV1 ExplainModeV1 = "notes"
 	ExplainFailsV1 ExplainModeV1 = "fails"
+	ExplainDebugV1 ExplainModeV1 = "debug"
 )
 
 // TraceV1 models the trace result returned for queries that include the
@@ -352,6 +371,9 @@ type CompileRequestV1 struct {
 	Input    *interface{} `json:"input"`
 	Query    string       `json:"query"`
 	Unknowns *[]string    `json:"unknowns"`
+	Options  struct {
+		DisableInlining []string `json:"disableInlining,omitempty"`
+	} `json:"options,omitempty"`
 }
 
 // CompileResponseV1 models the response message for Compile API operations.

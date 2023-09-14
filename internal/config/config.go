@@ -8,26 +8,27 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"regexp"
 	"strings"
 
-	"github.com/ghodss/yaml"
+	"sigs.k8s.io/yaml"
 
 	"github.com/open-policy-agent/opa/internal/strvals"
 	"github.com/open-policy-agent/opa/keys"
 	"github.com/open-policy-agent/opa/logging"
 	"github.com/open-policy-agent/opa/plugins/rest"
+	"github.com/open-policy-agent/opa/tracing"
 	"github.com/open-policy-agent/opa/util"
 )
 
 // ServiceOptions stores the options passed to ParseServicesConfig
 type ServiceOptions struct {
-	Raw        json.RawMessage
-	AuthPlugin func(string) rest.HTTPAuthPlugin
-	Keys       map[string]*keys.Config
-	Logger     logging.Logger
+	Raw                   json.RawMessage
+	AuthPlugin            rest.AuthPluginLookupFunc
+	Keys                  map[string]*keys.Config
+	Logger                logging.Logger
+	DistributedTacingOpts tracing.Options
 }
 
 // ParseServicesConfig returns a set of named service clients. The service
@@ -43,7 +44,7 @@ func ParseServicesConfig(opts ServiceOptions) (map[string]rest.Client, error) {
 
 	if err := util.Unmarshal(opts.Raw, &arr); err == nil {
 		for _, s := range arr {
-			client, err := rest.New(s, opts.Keys, rest.AuthPluginLookup(opts.AuthPlugin), rest.Logger(opts.Logger))
+			client, err := rest.New(s, opts.Keys, rest.AuthPluginLookup(opts.AuthPlugin), rest.Logger(opts.Logger), rest.DistributedTracingOpts(opts.DistributedTacingOpts))
 			if err != nil {
 				return nil, err
 			}
@@ -51,7 +52,7 @@ func ParseServicesConfig(opts ServiceOptions) (map[string]rest.Client, error) {
 		}
 	} else if util.Unmarshal(opts.Raw, &obj) == nil {
 		for k := range obj {
-			client, err := rest.New(obj[k], opts.Keys, rest.Name(k), rest.AuthPluginLookup(opts.AuthPlugin), rest.Logger(opts.Logger))
+			client, err := rest.New(obj[k], opts.Keys, rest.Name(k), rest.AuthPluginLookup(opts.AuthPlugin), rest.Logger(opts.Logger), rest.DistributedTracingOpts(opts.DistributedTacingOpts))
 			if err != nil {
 				return nil, err
 			}
@@ -75,7 +76,7 @@ func Load(configFile string, overrides []string, overrideFiles []string) ([]byte
 	if configFile != "" {
 		var bytes []byte
 		var err error
-		bytes, err = ioutil.ReadFile(configFile)
+		bytes, err = os.ReadFile(configFile)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +84,7 @@ func Load(configFile string, overrides []string, overrideFiles []string) ([]byte
 		processedConf := subEnvVars(string(bytes))
 
 		if err := yaml.Unmarshal([]byte(processedConf), &baseConf); err != nil {
-			return []byte{}, fmt.Errorf("failed to parse %s: %s", configFile, err)
+			return nil, fmt.Errorf("failed to parse %s: %s", configFile, err)
 		}
 	}
 
@@ -93,19 +94,19 @@ func Load(configFile string, overrides []string, overrideFiles []string) ([]byte
 	for _, override := range overrides {
 		processedOverride := subEnvVars(override)
 		if err := strvals.ParseInto(processedOverride, overrideConf); err != nil {
-			return []byte{}, fmt.Errorf("failed parsing --set data: %s", err)
+			return nil, fmt.Errorf("failed parsing --set data: %s", err)
 		}
 	}
 
 	// User specified a config override value via --set-file
 	for _, override := range overrideFiles {
 		reader := func(rs []rune) (interface{}, error) {
-			bytes, err := ioutil.ReadFile(string(rs))
+			bytes, err := os.ReadFile(string(rs))
 			value := strings.TrimSpace(string(bytes))
 			return value, err
 		}
 		if err := strvals.ParseIntoFile(override, overrideConf, reader); err != nil {
-			return []byte{}, fmt.Errorf("failed parsing --set-file data: %s", err)
+			return nil, fmt.Errorf("failed parsing --set-file data: %s", err)
 		}
 	}
 

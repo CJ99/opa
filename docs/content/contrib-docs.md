@@ -19,7 +19,7 @@ Docs for the OPA sub-projects each have their own home. Check out their docs to 
 - [devel/](https://github.com/open-policy-agent/opa/blob/main/docs/devel) - Developer documentation for OPA (not part of the website)
 - [website/](https://github.com/open-policy-agent/opa/blob/main/docs/website) - This directory contains all of the Markdown, HTML, Sass/CSS, and other assets needed to build the [openpolicyagent.org](https://openpolicyagent.org) website. See the section below for steps to build the site and test documentation changes locally. This content is not versioned for each release, it is common scaffolding for the website.
 - [content/](https://github.com/open-policy-agent/opa/blob/main/docs/content) - The raw OPA documentation can be found under the directory. This content is versioned for each release and should have all images and code snippets alongside the markdown content files.
-- [website/data/integrations.yaml](https://github.com/open-policy-agent/opa/blob/main/docs/website/data/integrations.yaml) - Source for the integrations index. See [Integration Index](https://github.com/open-policy-agent/opa/blob/main/docs/README.md#integration-index) below for more details.
+- [content/integrations, content/organizations, content/softwares](https://github.com/open-policy-agent/opa/blob/main/docs/content) - the source for data used to generate the [OPA Ecosystem](https://www.openpolicyagent.org/docs/latest/ecosystem/)
 
 ## Markdown Page Structure
 
@@ -37,7 +37,7 @@ After the Frontmatter block, each page uses standard markdown formatting. For a 
 
 ## Create a local branch
 
-To get started, fork the OPA repository and create a local branch for your Docs changes. Check out the [Development Guide](../development/#fork-clone-create-a-branch) if you need some help setting this up. 
+To get started, fork the OPA repository and create a local branch for your Docs changes. Check out the [Development Guide](../contrib-development/#fork-clone-create-a-branch) if you need some help setting this up. 
 
 ## Update Existing Docs
 
@@ -52,7 +52,7 @@ In the case where you want to add a topic that doesn't fit nicely into any of th
 Once you have made your updates, the next step is to test that they look as expected. To test your changes, generate a local preview with your updated files and preview them with Netlify.
 
 Summary of steps:
-1. Install dependencies: [Hugo](#installing-hugo), [NodeJS](https://nodejs.org), and [Netlify CLI](https://www.netlify.com/products/dev/)
+1. Install dependencies: [Hugo](https://github.com/open-policy-agent/opa/tree/main/docs#installing-hugo), [NodeJS](https://nodejs.org), and [Netlify CLI](https://www.netlify.com/products/dev/)
 1. Build artifacts: `make build`
 1. Generate HTML files: `make docs-serve-local` (*This can take up to 5 min*)
 1. Start preview server: `netlify dev`
@@ -65,4 +65,4 @@ Once you've tested your changes and you're happy with how they look, commit them
 
 ## Having trouble
 
-Reach out in the [#development](https://openpolicyagent.slack.com/archives/C02L1TLPN59) channel to ask for help. 
+Reach out in the [#contributors](https://openpolicyagent.slack.com/archives/C02L1TLPN59) channel to ask for help. 

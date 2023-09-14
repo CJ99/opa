@@ -15,12 +15,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/open-policy-agent/opa/metrics"
 	"github.com/open-policy-agent/opa/plugins"
 	"github.com/open-policy-agent/opa/plugins/bundle"
-	"github.com/open-policy-agent/opa/storage/inmem"
+	inmem "github.com/open-policy-agent/opa/storage/inmem/test"
 	"github.com/open-policy-agent/opa/util"
+	"github.com/open-policy-agent/opa/util/test"
 	"github.com/open-policy-agent/opa/version"
+
+	lstat "github.com/open-policy-agent/opa/plugins/logs/status"
 )
 
 func TestMain(m *testing.M) {
@@ -28,6 +34,209 @@ func TestMain(m *testing.M) {
 		version.Version = "unit-test"
 	}
 	os.Exit(m.Run())
+}
+
+func TestPluginPrometheus(t *testing.T) {
+	fixture := newTestFixture(t, nil, func(c *Config) {
+		c.Prometheus = true
+	})
+	fixture.server.ch = make(chan UpdateRequestV1)
+	defer fixture.server.stop()
+
+	ctx := context.Background()
+
+	err := fixture.plugin.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fixture.plugin.Stop(ctx)
+	<-fixture.server.ch
+
+	status := testStatus()
+
+	fixture.plugin.BulkUpdateBundleStatus(map[string]*bundle.Status{"bundle": status})
+	<-fixture.server.ch
+
+	registerMock := fixture.manager.PrometheusRegister().(*prometheusRegisterMock)
+
+	assertOpInformationGauge(t, registerMock)
+
+	if registerMock.Collectors[pluginStatus] != true {
+		t.Fatalf("Plugin status metric was not registered on prometheus")
+	}
+	if registerMock.Collectors[loaded] != true {
+		t.Fatalf("Loaded metric was not registered on prometheus")
+	}
+	if registerMock.Collectors[failLoad] != true {
+		t.Fatalf("FailLoad metric was not registered on prometheus")
+	}
+	if registerMock.Collectors[lastRequest] != true {
+		t.Fatalf("Last request metric was not registered on prometheus")
+	}
+	if registerMock.Collectors[lastSuccessfulActivation] != true {
+		t.Fatalf("Last Successful Activation metric was not registered on prometheus")
+	}
+	if registerMock.Collectors[lastSuccessfulDownload] != true {
+		t.Fatalf("Last Successful Download metric was not registered on prometheus")
+	}
+	if registerMock.Collectors[lastSuccessfulRequest] != true {
+		t.Fatalf("Last Successful Request metric was not registered on prometheus")
+	}
+	if registerMock.Collectors[bundleLoadDuration] != true {
+		t.Fatalf("Bundle Load Duration metric was not registered on prometheus")
+	}
+	if len(registerMock.Collectors) != 9 {
+		t.Fatalf("Number of collectors expected (%v), got %v", 9, len(registerMock.Collectors))
+	}
+
+	lastRequestMetricResult := time.UnixMilli(int64(testutil.ToFloat64(lastRequest) / 1e6))
+	if !lastRequestMetricResult.Equal(status.LastRequest) {
+		t.Fatalf("Last request expected (%v), got %v", status.LastRequest.UTC(), lastRequestMetricResult.UTC())
+	}
+
+	lastSuccessfulRequestMetricResult := time.UnixMilli(int64(testutil.ToFloat64(lastSuccessfulRequest) / 1e6))
+	if !lastSuccessfulRequestMetricResult.Equal(status.LastSuccessfulRequest) {
+		t.Fatalf("Last request expected (%v), got %v", status.LastSuccessfulRequest.UTC(), lastSuccessfulRequestMetricResult.UTC())
+	}
+
+	lastSuccessfulDownloadMetricResult := time.UnixMilli(int64(testutil.ToFloat64(lastSuccessfulDownload) / 1e6))
+	if !lastSuccessfulDownloadMetricResult.Equal(status.LastSuccessfulDownload) {
+		t.Fatalf("Last request expected (%v), got %v", status.LastSuccessfulDownload.UTC(), lastSuccessfulDownloadMetricResult.UTC())
+	}
+
+	lastSuccessfulActivationMetricResult := time.UnixMilli(int64(testutil.ToFloat64(lastSuccessfulActivation) / 1e6))
+	if !lastSuccessfulActivationMetricResult.Equal(status.LastSuccessfulActivation) {
+		t.Fatalf("Last request expected (%v), got %v", status.LastSuccessfulActivation.UTC(), lastSuccessfulActivationMetricResult.UTC())
+	}
+
+	bundlesLoaded := testutil.CollectAndCount(loaded)
+	if bundlesLoaded != 1 {
+		t.Fatalf("Unexpected number of bundle loads (%v), got %v", 1, bundlesLoaded)
+	}
+
+	bundlesFailedToLoad := testutil.CollectAndCount(failLoad)
+	if bundlesFailedToLoad != 0 {
+		t.Fatalf("Unexpected number of bundle fails load (%v), got %v", 0, bundlesFailedToLoad)
+	}
+
+	pluginsStatus := testutil.CollectAndCount(pluginStatus)
+	if pluginsStatus != 1 {
+		t.Fatalf("Unexpected number of plugins (%v), got %v", 1, pluginsStatus)
+	}
+
+	// Assert that metrics are purged when prometheus is disabled
+	prometheusDisabledConfig := newConfig(fixture.manager, func(c *Config) {
+		c.Prometheus = false
+	})
+	fixture.plugin.Reconfigure(ctx, prometheusDisabledConfig)
+	eventually(t, func() bool { return fixture.plugin.config.Prometheus == false })
+
+	if len(registerMock.Collectors) != 0 {
+		t.Fatalf("Number of collectors expected (%v), got %v", 0, len(registerMock.Collectors))
+	}
+
+	// Assert that metrics are re-registered when prometheus is re-enabled
+	prometheusReenabledConfig := newConfig(fixture.manager, func(c *Config) {
+		c.Prometheus = true
+	})
+	fixture.plugin.Reconfigure(ctx, prometheusReenabledConfig)
+	eventually(t, func() bool { return fixture.plugin.config.Prometheus == true })
+
+	if len(registerMock.Collectors) != 9 {
+		t.Fatalf("Number of collectors expected (%v), got %v", 9, len(registerMock.Collectors))
+	}
+}
+
+func eventually(t *testing.T, predicate func() bool) {
+	t.Helper()
+	if !test.Eventually(t, 1*time.Second, predicate) {
+		t.Fatal("check took too long")
+	}
+}
+
+func assertOpInformationGauge(t *testing.T, registerMock *prometheusRegisterMock) {
+	gauges := filterGauges(registerMock)
+	if len(gauges) != 1 {
+		t.Fatalf("Expected one registered gauge on prometheus but got %v", len(gauges))
+	}
+
+	gauge := gauges[0]
+
+	fqName := getName(gauge)
+	if fqName != "opa_info" {
+		t.Fatalf("Expected gauge to have name opa_info but was %s", fqName)
+	}
+
+	labels := getConstLabels(gauge)
+	versionAct := labels["version"]
+	if versionAct != version.Version {
+		t.Fatalf("Expected gauge to have version label with value %s but was %s", version.Version, versionAct)
+	}
+}
+
+func getName(gauge prometheus.Gauge) string {
+	desc := reflect.Indirect(reflect.ValueOf(gauge.Desc()))
+	fqName := desc.FieldByName("fqName").String()
+	return fqName
+}
+
+func getConstLabels(gauge prometheus.Gauge) prometheus.Labels {
+	desc := reflect.Indirect(reflect.ValueOf(gauge.Desc()))
+	constLabelPairs := desc.FieldByName("constLabelPairs")
+
+	// put all label pairs into a map for easier comparison.
+	labels := make(prometheus.Labels, constLabelPairs.Len())
+	for i := 0; i < constLabelPairs.Len(); i++ {
+		name := constLabelPairs.Index(i).Elem().FieldByName("Name").Elem().String()
+		value := constLabelPairs.Index(i).Elem().FieldByName("Value").Elem().String()
+		labels[name] = value
+	}
+	return labels
+}
+
+func filterGauges(registerMock *prometheusRegisterMock) []prometheus.Gauge {
+	fltd := make([]prometheus.Gauge, 0)
+
+	for m := range registerMock.Collectors {
+		switch metric := m.(type) {
+		case prometheus.Gauge:
+			fltd = append(fltd, metric)
+		}
+	}
+	return fltd
+}
+
+func TestMetricsBundleWithoutRevision(t *testing.T) {
+	fixture := newTestFixture(t, nil, func(c *Config) {
+		c.Prometheus = true
+	})
+	fixture.server.ch = make(chan UpdateRequestV1)
+	defer fixture.server.stop()
+
+	ctx := context.Background()
+
+	err := fixture.plugin.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fixture.plugin.Stop(ctx)
+	<-fixture.server.ch
+
+	status := testStatus()
+	status.ActiveRevision = ""
+
+	fixture.plugin.BulkUpdateBundleStatus(map[string]*bundle.Status{"bundle": status})
+	<-fixture.server.ch
+
+	bundlesLoaded := testutil.CollectAndCount(loaded)
+	if bundlesLoaded != 1 {
+		t.Fatalf("Unexpected number of bundle loads (%v), got %v", 1, bundlesLoaded)
+	}
+
+	bundlesFailedToLoad := testutil.CollectAndCount(failLoad)
+	if bundlesFailedToLoad != 0 {
+		t.Fatalf("Unexpected number of bundle fails load (%v), got %v", 0, bundlesFailedToLoad)
+	}
 }
 
 func TestPluginStart(t *testing.T) {
@@ -72,6 +281,40 @@ func TestPluginStart(t *testing.T) {
 
 	if !reflect.DeepEqual(result, exp) {
 		t.Fatalf("Expected: %v but got: %v", exp, result)
+	}
+}
+
+func TestPluginNoLogging(t *testing.T) {
+	// Given no custom plugin, no service(s) and no console logging configured,
+	// this should not be an error, but neither do we need to initiate the plugin
+	cases := []struct {
+		note   string
+		config []byte
+	}{
+		{
+			note:   "no plugin attributes",
+			config: []byte(`{}`),
+		},
+		{
+			note:   "empty plugin configuration",
+			config: []byte(`{"status": {}}`),
+		},
+		{
+			note:   "only disabled console logger",
+			config: []byte(`{"status": {"console": "false"}}`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.note, func(t *testing.T) {
+			config, err := ParseConfig(tc.config, []string{}, nil)
+			if err != nil {
+				t.Errorf("expected no error: %v", err)
+			}
+			if config != nil {
+				t.Errorf("excected no config for a no-op logging plugin")
+			}
+		})
 	}
 }
 
@@ -428,6 +671,49 @@ func TestPluginStartDiscovery(t *testing.T) {
 	}
 }
 
+func TestPluginStartDecisionLogs(t *testing.T) {
+
+	fixture := newTestFixture(t, nil)
+	fixture.server.ch = make(chan UpdateRequestV1)
+	defer fixture.server.stop()
+
+	ctx := context.Background()
+
+	err := fixture.plugin.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fixture.plugin.Stop(ctx)
+
+	// Ignore the plugin updating its status (tested elsewhere)
+	<-fixture.server.ch
+
+	status := &lstat.Status{
+		Code:     "decision_log_error",
+		Message:  "Upload Failed",
+		HTTPCode: "400",
+	}
+
+	fixture.plugin.UpdateDecisionLogsStatus(*status)
+	result := <-fixture.server.ch
+
+	exp := UpdateRequestV1{
+		Labels: map[string]string{
+			"id":      "test-instance-id",
+			"app":     "example-app",
+			"version": version.Version,
+		},
+		DecisionLogs: status,
+		Plugins: map[string]*plugins.Status{
+			"status": {State: plugins.StateOK},
+		},
+	}
+
+	if !reflect.DeepEqual(result, exp) {
+		t.Fatalf("Expected: %+v but got: %+v", exp, result)
+	}
+}
+
 func TestPluginBadAuth(t *testing.T) {
 	fixture := newTestFixture(t, nil)
 	ctx := context.Background()
@@ -437,6 +723,9 @@ func TestPluginBadAuth(t *testing.T) {
 	err := fixture.plugin.oneShot(ctx)
 	if err == nil {
 		t.Fatal("Expected error")
+	}
+	if err.Error() != "status update failed, server replied with HTTP 401 Unauthorized" {
+		t.Fatalf("Unexpected error contents: %v", err)
 	}
 }
 
@@ -450,6 +739,9 @@ func TestPluginBadPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error")
 	}
+	if err.Error() != "status update failed, server replied with HTTP 404 Not Found" {
+		t.Fatalf("Unexpected error contents: %v", err)
+	}
 }
 
 func TestPluginBadStatus(t *testing.T) {
@@ -461,6 +753,36 @@ func TestPluginBadStatus(t *testing.T) {
 	err := fixture.plugin.oneShot(ctx)
 	if err == nil {
 		t.Fatal("Expected error")
+	}
+	if err.Error() != "status update failed, server replied with HTTP 500 Internal Server Error" {
+		t.Fatalf("Unexpected error contents: %v", err)
+	}
+}
+
+func TestPluginNonstandardStatus(t *testing.T) {
+	fixture := newTestFixture(t, nil)
+	ctx := context.Background()
+	fixture.server.expCode = 599
+	defer fixture.server.stop()
+	fixture.plugin.lastBundleStatuses = map[string]*bundle.Status{}
+	err := fixture.plugin.oneShot(ctx)
+	if err == nil {
+		t.Fatal("Expected error")
+	}
+	if err.Error() != "status update failed, server replied with HTTP 599 " {
+		t.Fatalf("Unexpected error contents: %v", err)
+	}
+}
+
+func TestPlugin2xxStatus(t *testing.T) {
+	fixture := newTestFixture(t, nil)
+	ctx := context.Background()
+	fixture.server.expCode = 204
+	defer fixture.server.stop()
+	fixture.plugin.lastBundleStatuses = map[string]*bundle.Status{}
+	err := fixture.plugin.oneShot(ctx)
+	if err != nil {
+		t.Fatal("Expected no error")
 	}
 }
 
@@ -560,16 +882,6 @@ func TestParseConfigDefaultServiceWithConsole(t *testing.T) {
 	}
 }
 
-func TestParseConfigDefaultServiceWithNoServiceOrConsole(t *testing.T) {
-	loggerConfig := []byte(`{}`)
-
-	_, err := ParseConfig(loggerConfig, []string{}, nil)
-
-	if err == nil {
-		t.Error("Expected an error but err==nil")
-	}
-}
-
 func TestParseConfigTriggerMode(t *testing.T) {
 	cases := []struct {
 		note     string
@@ -664,19 +976,15 @@ func newTestFixture(t *testing.T, m metrics.Metrics, options ...testPluginCustom
 				}
 			]}`, ts.server.URL))
 
-	manager, err := plugins.New(managerConfig, "test-instance-id", inmem.New())
+	registerMock := &prometheusRegisterMock{
+		Collectors: map[prometheus.Collector]bool{},
+	}
+	manager, err := plugins.New(managerConfig, "test-instance-id", inmem.New(), plugins.WithPrometheusRegister(registerMock))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	pluginConfig := []byte(`{
-			"service": "example",
-		}`)
-
-	config, _ := ParseConfig(pluginConfig, manager.Services(), nil)
-	for _, option := range options {
-		option(config)
-	}
+	config := newConfig(manager, options...)
 
 	p := New(config, manager).WithMetrics(m)
 
@@ -686,6 +994,19 @@ func newTestFixture(t *testing.T, m metrics.Metrics, options ...testPluginCustom
 		server:  &ts,
 	}
 
+}
+
+func newConfig(manager *plugins.Manager, options ...testPluginCustomizer) *Config {
+	pluginConfig := []byte(`{
+			"service": "example",
+		}`)
+
+	config, _ := ParseConfig(pluginConfig, manager.Services(), nil)
+	for _, option := range options {
+		option(config)
+	}
+
+	return config
 }
 
 type testServer struct {
@@ -719,15 +1040,18 @@ func (t *testServer) stop() {
 }
 
 func testStatus() *bundle.Status {
-
 	tDownload, _ := time.Parse(time.RFC3339Nano, "2018-01-01T00:00:00.0000000Z")
 	tActivate, _ := time.Parse(time.RFC3339Nano, "2018-01-01T00:00:01.0000000Z")
+	tSuccessfulRequest, _ := time.Parse(time.RFC3339Nano, "2018-01-01T00:00:02.0000000Z")
+	tRequest, _ := time.Parse(time.RFC3339Nano, "2018-01-01T00:00:03.0000000Z")
 
 	status := bundle.Status{
 		Name:                     "example/authz",
 		ActiveRevision:           "quickbrawnfaux",
 		LastSuccessfulDownload:   tDownload,
 		LastSuccessfulActivation: tActivate,
+		LastRequest:              tRequest,
+		LastSuccessfulRequest:    tSuccessfulRequest,
 	}
 
 	return &status
@@ -777,4 +1101,24 @@ func TestPluginCustomBackend(t *testing.T) {
 	if len(backend.reqs) != 2 {
 		t.Fatalf("Unexpected number of reqs: expected 2, got %d: %v", len(backend.reqs), backend.reqs)
 	}
+}
+
+type prometheusRegisterMock struct {
+	Collectors map[prometheus.Collector]bool
+}
+
+func (p prometheusRegisterMock) Register(collector prometheus.Collector) error {
+	p.Collectors[collector] = true
+	return nil
+}
+
+func (p prometheusRegisterMock) MustRegister(collector ...prometheus.Collector) {
+	for _, c := range collector {
+		p.Collectors[c] = true
+	}
+}
+
+func (p prometheusRegisterMock) Unregister(collector prometheus.Collector) bool {
+	delete(p.Collectors, collector)
+	return true
 }

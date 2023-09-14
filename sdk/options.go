@@ -5,13 +5,16 @@
 package sdk
 
 import (
+	"fmt"
 	"io"
-	"io/ioutil"
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/open-policy-agent/opa/hooks"
 	"github.com/open-policy-agent/opa/logging"
 	"github.com/open-policy-agent/opa/plugins"
+	"github.com/open-policy-agent/opa/storage"
+	"github.com/open-policy-agent/opa/storage/inmem"
 )
 
 // Options contains parameters to setup and configure OPA.
@@ -40,6 +43,18 @@ type Options struct {
 	// registered with the OPA SDK instance.
 	Plugins map[string]plugins.Factory
 
+	// ID provides an option to set a static ID for the OPA system, avoiding
+	// the need to generate a random one at initialization. Setting a static ID
+	// is recommended, as it makes it easier to track the system over time.
+	ID string
+
+	// Store sets the store to be used by the SDK instance. If nil, it'll use OPA's
+	// inmem store.
+	Store storage.Store
+
+	// Hooks allows hooking into the internals of SDK operations (TODO(sr): find better words)
+	Hooks hooks.Hooks
+
 	config []byte
 	block  bool
 }
@@ -61,12 +76,24 @@ func (o *Options) init() error {
 		o.ConsoleLogger = l
 	}
 
-	bs, err := ioutil.ReadAll(o.Config)
-	if err != nil {
-		return err
+	if o.Config == nil {
+		o.config = []byte("{}")
+	} else {
+		bs, err := io.ReadAll(o.Config)
+		if err != nil {
+			return err
+		}
+		o.config = bs
 	}
 
-	o.config = bs
+	if o.Store == nil {
+		o.Store = inmem.New()
+	}
+
+	if err := o.Hooks.Validate(); err != nil {
+		return fmt.Errorf("hooks: %w", err)
+	}
+
 	return nil
 }
 
@@ -95,7 +122,7 @@ func (o *ConfigOptions) init() error {
 		o.block = true
 	}
 
-	bs, err := ioutil.ReadAll(o.Config)
+	bs, err := io.ReadAll(o.Config)
 	if err != nil {
 		return err
 	}

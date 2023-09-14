@@ -13,6 +13,19 @@ Terraform is about to make before it makes them. Such tests help in different wa
 * tests can help catch problems that arise when applying Terraform to production after applying it to staging
 
 
+Terraform is a popular integration case for OPA and there are already a number of popular tools for 
+running policy on HCL and plan JSONs.
+{{<
+  ecosystem_feature_link
+  key="terraform"
+  singular_intro="There is currently 1 project"
+  singular_link="listed in the OPA Ecosystem"
+  singular_outro="which integrates OPA and Terraform."
+  plural_intro="You may wish to review the "
+  plural_link="COUNT projects"
+  plural_outro="listed in the OPA Ecosystem which support Terraform use cases."
+>}}
+
 ## Goals
 
 In this tutorial, you'll learn how to use OPA to implement unit tests for Terraform plans that create
@@ -480,14 +493,14 @@ resource_types := {"aws_autoscaling_group", "aws_instance", "aws_iam", "aws_laun
 #########
 
 # Authorization holds if score for the plan is acceptable and no changes are made to IAM
-default authz = false
+default authz := false
 authz {
     score < blast_radius
     not touches_iam
 }
 
 # Compute the score for a Terraform plan as the weighted sum of deletions, creations, modifications
-score = s {
+score := s {
     all := [ x |
             some resource_type
             crud := weights[resource_type];
@@ -510,7 +523,7 @@ touches_iam {
 ####################
 
 # list of all resources of a given type
-resources[resource_type] = all {
+resources[resource_type] := all {
     some resource_type
     resource_types[resource_type]
     all := [name |
@@ -520,7 +533,7 @@ resources[resource_type] = all {
 }
 
 # number of creations of resources of a given type
-num_creates[resource_type] = num {
+num_creates[resource_type] := num {
     some resource_type
     resource_types[resource_type]
     all := resources[resource_type]
@@ -530,7 +543,7 @@ num_creates[resource_type] = num {
 
 
 # number of deletions of resources of a given type
-num_deletes[resource_type] = num {
+num_deletes[resource_type] := num {
     some resource_type
     resource_types[resource_type]
     all := resources[resource_type]
@@ -539,7 +552,7 @@ num_deletes[resource_type] = num {
 }
 
 # number of modifications to resources of a given type
-num_modifies[resource_type] = num {
+num_modifies[resource_type] := num {
     some resource_type
     resource_types[resource_type]
     all := resources[resource_type]
@@ -654,7 +667,7 @@ opa exec --decision terraform/analysis/score --bundle policy/ tfplan_large.json
 
 ### 6. (Optional) Run OPA using a remote policy bundle
 
-In addition to loading policies from the local filesystem, `opa exec` can fetch policies from remote locations via [Bundles](). To see this in action, first build the policies into a bundle:
+In addition to loading policies from the local filesystem, `opa exec` can fetch policies from remote locations via [Bundles](../management-bundles). To see this in action, first build the policies into a bundle:
 
 ```shell
 opa build policy/
@@ -801,7 +814,7 @@ resources := { r |
 }
 
 # Variant to match root_module resources
-module_resources(path, value) = rs {
+module_resources(path, value) := rs {
     # Expect something like:
     #
     #     {
@@ -820,7 +833,7 @@ module_resources(path, value) = rs {
 }
 
 # Variant to match child_modules resources
-module_resources(path, value) = rs {
+module_resources(path, value) := rs {
     # Expect something like:
     #
     #     {
@@ -845,7 +858,7 @@ module_resources(path, value) = rs {
     rs := value
 }
 
-reverse_index(path, idx) = value {
+reverse_index(path, idx) := value {
 	value := path[count(path) - idx]
 }
 ```
@@ -885,3 +898,10 @@ Additional use cases might include:
 * Ensuring all resources have tags before they are created
 * Making sure naming standards for resources are followed
 * Security or operational requirements
+
+# Ecosystem Projects
+
+As further reading, you might be interested to review the Terraform integrations
+from the OPA Ecosystem.
+
+{{< ecosystem_feature_embed key="terraform" topic="Terraform Validation" >}}

@@ -10,8 +10,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/open-policy-agent/opa/logging"
 	"github.com/sirupsen/logrus"
+
+	"github.com/open-policy-agent/opa/logging"
 )
 
 func GetLevel(level string) (logging.Level, error) {
@@ -29,35 +30,24 @@ func GetLevel(level string) (logging.Level, error) {
 	}
 }
 
-func GetFormatter(format string) logrus.Formatter {
+func GetFormatter(format, timestampFormat string) logrus.Formatter {
 	switch format {
 	case "text":
 		return &prettyFormatter{}
 	case "json-pretty":
-		return &logrus.JSONFormatter{PrettyPrint: true}
+		return &logrus.JSONFormatter{PrettyPrint: true, TimestampFormat: timestampFormat}
 	default:
-		return &logrus.JSONFormatter{}
+		return &logrus.JSONFormatter{TimestampFormat: timestampFormat}
 	}
 }
 
 // prettyFormatter implements the Logrus Formatter interface
 // and provides a more simple, but easier to read, text formatter
 // option than the default logrus.TextFormatter.
-type prettyFormatter struct {
-}
-
-func isJSON(buf []byte) bool {
-	var tmp interface{}
-	err := json.Unmarshal(buf, &tmp)
-	return err == nil
-}
+type prettyFormatter struct{}
 
 func spaces(num int) string {
-	sb := strings.Builder{}
-	for i := 0; i < num; i++ {
-		sb.WriteByte(' ')
-	}
-	return sb.String()
+	return strings.Repeat(" ", num)
 }
 
 func (p *prettyFormatter) Format(e *logrus.Entry) ([]byte, error) {
@@ -84,7 +74,7 @@ func (p *prettyFormatter) Format(e *logrus.Entry) ([]byte, error) {
 				sb.WriteByte('\n')
 				stringVal = sb.String()
 			}
-		} else if ok && isJSON([]byte(stringVal)) {
+		} else if ok && json.Valid([]byte(stringVal)) {
 			var tmp bytes.Buffer
 			err := json.Indent(&tmp, []byte(stringVal), spaces(multiLineIndent), spaces(2))
 			if err != nil {

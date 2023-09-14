@@ -6,7 +6,7 @@ package bundle
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -27,7 +27,7 @@ func TestGenerateSignedToken(t *testing.T) {
 		{"/a/b/y/data.yaml", `foo: 1`},
 		{"/example/example.rego", `package example`},
 		{"/policy.wasm", `modules-compiled-as-wasm-binary`},
-		{"/data.json", `{"x": {"y": true}, "a": {"b": {"z": true}}}}`},
+		{"/data.json", `{"x": {"y": true}, "a": {"b": {"z": true}}}`},
 	}
 
 	input := []FileInfo{}
@@ -106,7 +106,7 @@ func TestGenerateSignedTokenWithClaims(t *testing.T) {
 
 		// create claims file
 		claimsFile := filepath.Join(rootDir, "claims.json")
-		if err := ioutil.WriteFile(claimsFile, claimBytes, 0644); err != nil {
+		if err := os.WriteFile(claimsFile, claimBytes, 0644); err != nil {
 			t.Fatalf("Unexpected error: %s", err)
 		}
 

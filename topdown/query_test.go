@@ -7,11 +7,12 @@ package topdown
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/open-policy-agent/opa/ast"
 	"github.com/open-policy-agent/opa/storage"
-	"github.com/open-policy-agent/opa/storage/inmem"
+	inmem "github.com/open-policy-agent/opa/storage/inmem/test"
 )
 
 func TestQueryTracerDontPlugLocalVars(t *testing.T) {
@@ -175,6 +176,71 @@ func TestDisabledTracer(t *testing.T) {
 
 	if len(tracer.events) > 0 {
 		t.Fatalf("Expected no events on test tracer, got %d", len(tracer.events))
+	}
+}
+
+func TestRegoMetadataBuiltinCall(t *testing.T) {
+	tests := []struct {
+		note          string
+		query         string
+		expectedError string
+	}{
+		{
+			note:          "rego.metadata.chain() call",
+			query:         "rego.metadata.chain()",
+			expectedError: "rego.metadata.chain(): eval_builtin_error: rego.metadata.chain: the rego.metadata.chain function must only be called within the scope of a rule",
+		},
+		{
+			note:          "rego.metadata.rule() call",
+			query:         "rego.metadata.rule()",
+			expectedError: "rego.metadata.rule(): eval_builtin_error: rego.metadata.rule: the rego.metadata.rule function must only be called within the scope of a rule",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.note, func(t *testing.T) {
+			c := ast.NewCompiler()
+			q := NewQuery(ast.MustParseBody(tc.query)).WithCompiler(c).
+				WithStrictBuiltinErrors(true)
+			_, err := q.Run(context.Background())
+
+			if err == nil {
+				t.Fatalf("expected error")
+			}
+
+			if tc.expectedError != err.Error() {
+				t.Fatalf("expected error:\n\n%s\n\ngot:\n\n%s", tc.expectedError, err.Error())
+			}
+		})
+	}
+}
+
+func TestWithCompilerErrors(t *testing.T) {
+	store := inmem.New()
+	ctx := context.Background()
+	txn := storage.NewTransactionOrDie(ctx, store)
+	defer store.Abort(ctx, txn)
+
+	// Policy with reference to non-existing function
+	modules := map[string]*ast.Module{
+		"tst": ast.MustParseModule(`package test
+p := data.q(42)`),
+	}
+
+	c := ast.NewCompiler()
+	c.Compile(modules)
+	q := NewQuery(ast.MustParseBody("data.a = 1")).
+		WithCompiler(c).
+		WithStore(store).
+		WithTransaction(txn)
+
+	_, err := q.Run(context.Background())
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	expected := "eval_internal_error: compiler has errors"
+	if !strings.Contains(err.Error(), expected) {
+		t.Fatalf("expected error to contain '%s', got: %v", expected, err)
 	}
 }
 

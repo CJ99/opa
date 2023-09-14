@@ -7,16 +7,23 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/open-policy-agent/opa/logging"
 	"github.com/open-policy-agent/opa/test/e2e"
+	"github.com/open-policy-agent/opa/util/test"
+	"github.com/spf13/cobra"
 )
 
 func TestRunServerBase(t *testing.T) {
 	params := newTestRunParams()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	rt, err := initRuntime(ctx, params, nil)
+	rt, err := initRuntime(ctx, params, nil, false)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -45,10 +52,10 @@ func TestRunServerBase(t *testing.T) {
 
 func TestRunServerWithDiagnosticAddr(t *testing.T) {
 	params := newTestRunParams()
-	params.rt.DiagnosticAddrs = &[]string{":0"}
+	params.rt.DiagnosticAddrs = &[]string{"localhost:0"}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	rt, err := initRuntime(ctx, params, nil)
+	rt, err := initRuntime(ctx, params, nil, false)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -89,7 +96,7 @@ func TestInitRuntimeVerifyNonBundle(t *testing.T) {
 	params.pubKey = "secret"
 	params.serverMode = false
 
-	_, err := initRuntime(context.Background(), params, nil)
+	_, err := initRuntime(context.Background(), params, nil, false)
 	if err == nil {
 		t.Fatal("Expected error but got nil")
 	}
@@ -100,10 +107,155 @@ func TestInitRuntimeVerifyNonBundle(t *testing.T) {
 	}
 }
 
+func TestInitRuntimeSkipKnownSchemaCheck(t *testing.T) {
+
+	fs := map[string]string{
+		"test/authz.rego": `package system.authz
+
+		default allow := false
+
+		allow {
+          input.identty = "foo"        # this is a typo
+		}`,
+	}
+
+	test.WithTempFS(fs, func(rootDir string) {
+		rootDir = filepath.Join(rootDir, "test")
+
+		params := newTestRunParams()
+		err := params.authorization.Set("basic")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = initRuntime(context.Background(), params, []string{rootDir}, false)
+		if err == nil {
+			t.Fatal("Expected error but got nil")
+		}
+
+		if !strings.Contains(err.Error(), "undefined ref: input.identty") {
+			t.Errorf("Expected error \"%v\" not found", "undefined ref: input.identty")
+		}
+
+		// skip type checking for known input schemas
+		params.skipKnownSchemaCheck = true
+		_, err = initRuntime(context.Background(), params, []string{rootDir}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestRunServerCheckLogTimestampFormat(t *testing.T) {
+	for _, format := range []string{time.Kitchen, time.RFC3339Nano} {
+		t.Run(format, func(t *testing.T) {
+			t.Run("parameter", func(t *testing.T) {
+				params := newTestRunParams()
+				params.logTimestampFormat = format
+				checkLogTimeStampFormat(t, params, format)
+			})
+			t.Run("environment variable", func(t *testing.T) {
+				t.Setenv("OPA_LOG_TIMESTAMP_FORMAT", format)
+				params := newTestRunParams()
+				checkLogTimeStampFormat(t, params, format)
+			})
+		})
+	}
+}
+
+func checkLogTimeStampFormat(t *testing.T, params runCmdParams, format string) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	rt, err := initRuntime(ctx, params, nil, false)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	var buf bytes.Buffer
+	logger := rt.Manager.Logger().(*logging.StandardLogger)
+	logger.SetOutput(&buf)
+	testRuntime := e2e.WrapRuntime(ctx, cancel, rt)
+
+	done := make(chan bool)
+	go func() {
+		err := rt.Serve(ctx)
+		if err != nil {
+			t.Errorf("Unexpected error: %s", err)
+		}
+		done <- true
+	}()
+
+	err = testRuntime.WaitForServer()
+	if err != nil {
+		t.Fatalf("Unexpected error: %s", err)
+	}
+
+	validateBasicServe(t, testRuntime)
+
+	cancel()
+	<-done
+
+	for _, line := range strings.Split(buf.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec struct {
+			Time string `json:"time"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("incorrect log message %s: %v", line, err)
+		}
+		if rec.Time == "" {
+			t.Fatalf("the time field is empty in log message: %s", line)
+		}
+		if _, err := time.Parse(format, rec.Time); err != nil {
+			t.Fatalf("incorrect timestamp format %q: %v", rec.Time, err)
+		}
+	}
+}
+
+func TestInitRuntimeAddrSetByUser(t *testing.T) {
+	testCases := []struct {
+		name        string
+		addrValue   string
+		addrFlagSet bool
+	}{
+		{"AddrSetByUser_True", "localhost:8181", true},
+		{"AddrSetByUser_False", "", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.Flags().String("addr", "", "set address")
+			if tc.addrFlagSet {
+				if err := cmd.Flags().Set("addr", tc.addrValue); err != nil {
+					t.Fatalf("Failed to set addr flag: %v", err)
+				}
+			}
+
+			params := newTestRunParams()
+			params.rt.Addrs = &[]string{"localhost:0"}
+			ctx, cancel := context.WithCancel(context.Background())
+
+			rt, err := initRuntime(ctx, params, []string{}, cmd.Flags().Changed("addr"))
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			if rt.Params.AddrSetByUser != tc.addrFlagSet {
+				t.Errorf("Expected AddrSetByUser to be %v, but got %v", tc.addrFlagSet, rt.Params.AddrSetByUser)
+			}
+
+			cancel()
+		})
+	}
+}
+
 func newTestRunParams() runCmdParams {
 	params := newRunParams()
 	params.rt.GracefulShutdownPeriod = 1
-	params.rt.Addrs = &[]string{":0"}
+	params.rt.Addrs = &[]string{"localhost:0"}
 	params.rt.DiagnosticAddrs = &[]string{}
 	params.serverMode = true
 	return params

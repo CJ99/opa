@@ -5,6 +5,7 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -18,7 +19,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -33,10 +34,15 @@ import (
 	"github.com/open-policy-agent/opa/bundle"
 	"github.com/open-policy-agent/opa/internal/jwx/jwa"
 	"github.com/open-policy-agent/opa/internal/jwx/jws"
+	"github.com/open-policy-agent/opa/internal/providers/aws"
 	"github.com/open-policy-agent/opa/keys"
+	"github.com/open-policy-agent/opa/logging"
+	"github.com/open-policy-agent/opa/tracing"
 
 	"github.com/open-policy-agent/opa/internal/version"
 	"github.com/open-policy-agent/opa/util/test"
+
+	testlogger "github.com/open-policy-agent/opa/logging/test"
 )
 
 const keyID = "key1"
@@ -56,7 +62,7 @@ func TestAuthPluginWithNoAuthPluginLookup(t *testing.T) {
 			Plugin: &authPlugin,
 		},
 	}
-	_, err := cfg.authPlugin(nil)
+	_, err := cfg.AuthPlugin(nil)
 	if err == nil {
 		t.Error("Expected error but got nil")
 	}
@@ -216,7 +222,7 @@ func TestNew(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "TooManyS3CredOptions/metadata+environment",
+			name: "MultipleS3CredOptions/metadata+environment",
 			input: `{
 				"name": "foo",
 				"url": "http://localhost",
@@ -230,10 +236,10 @@ func TestNew(t *testing.T) {
 					}
 				}
 			}`,
-			wantErr: true,
+			wantErr: false,
 		},
 		{
-			name: "TooManyS3CredOptions/metadata+profile+environment+webidentity",
+			name: "MultipleS3CredOptions/metadata+profile+environment+webidentity",
 			input: `{
 				"name": "foo",
 				"url": "http://localhost",
@@ -242,14 +248,22 @@ func TestNew(t *testing.T) {
 						"profile_credentials": {},
 						"environment_credentials": {},
 						"web_identity_credentials": {},
-						"metadata_credentials": {}
+						"metadata_credentials": {
+							"aws_region": "us-east-1",
+							"iam_role": "my_iam_role"
+						}
 					}
 				}
 			}`,
-			wantErr: true,
+			env: map[string]string{
+				awsRoleArnEnvVar:              "TEST",
+				awsWebIdentityTokenFileEnvVar: "TEST",
+				awsRegionEnvVar:               "us-west-2",
+			},
+			wantErr: false,
 		},
 		{
-			name: "TooManyCredentialsOptions",
+			name: "MultipleCredentialsOptions",
 			input: `{
 				"name": "foo",
 				"url": "http://localhost",
@@ -260,7 +274,7 @@ func TestNew(t *testing.T) {
 					"bearer": {
 						"scheme": "Acmecorp-Token",
 						"token": "secret"
-					}					
+					}
 				}
 			}`,
 			wantErr: true,
@@ -531,6 +545,55 @@ func TestNew(t *testing.T) {
 			}`, grantTypeClientCredentials),
 		},
 		{
+			name: "Oauth2ClientCredentialsJWTAuthentication_with_AWS_KMS",
+			input: fmt.Sprintf(`{
+				"name": "foo",
+				"url": "http://localhost",
+				"credentials": {
+					"oauth2": {
+						"grant_type": %q,
+						"aws_kms": {
+							"name": "arn:aws:kms:eu-west-1:account_no:key/key_id",
+							"algorithm": "ECDSA_SHA_256"
+						},
+						"aws_signing": {
+							"service": "kms",
+							"environment_credentials": {
+								"aws_default_region": "eu-west-1"
+							}
+						},
+						"token_url": "https://localhost",
+						"scopes": ["profile", "opa"],
+						"additional_claims": {
+							"aud": "some audience"
+						}
+					}
+				}
+			}`, grantTypeClientCredentials),
+		},
+		{
+			name: "Oauth2ClientCredentialsJWTAuthentication_with_AWS_KMS_missing_credentials",
+			input: fmt.Sprintf(`{
+				"name": "foo",
+				"url": "http://localhost",
+				"credentials": {
+					"oauth2": {
+						"grant_type": %q,
+						"aws_kms": {
+							"name": "arn:aws:kms:eu-west-1:account_no:key/key_id",
+							"algorithm": "ECDSA_SHA_256"
+						},
+						"token_url": "https://localhost",
+						"scopes": ["profile", "opa"],
+						"additional_claims": {
+							"aud": "some audience"
+						}
+					}
+				}
+			}`, grantTypeClientCredentials),
+			wantErr: true,
+		},
+		{
 			name: "S3WebIdentityMissingEnvVars",
 			input: `{
 				"name": "foo",
@@ -688,14 +751,8 @@ func TestNew(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			for key, val := range tc.env {
-				_ = os.Setenv(key, val)
+				t.Setenv(key, val)
 			}
-
-			t.Cleanup(func() {
-				for key := range tc.env {
-					_ = os.Unsetenv(key)
-				}
-			})
 
 			client, err := New([]byte(tc.input), ks, AuthPluginLookup(mockAuthPluginLookup))
 			if err != nil {
@@ -703,7 +760,7 @@ func TestNew(t *testing.T) {
 				t.Fatalf("Unexpected error: %v", err)
 			}
 
-			plugin, err := client.config.authPlugin(mockAuthPluginLookup)
+			plugin, err := client.config.AuthPlugin(mockAuthPluginLookup)
 			if err != nil {
 				if tc.wantErr {
 					return
@@ -793,6 +850,126 @@ func TestDoWithResponseHeaderTimeout(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+type tracemock struct {
+	called int
+}
+
+func (m *tracemock) NewTransport(rt http.RoundTripper, _ tracing.Options) http.RoundTripper {
+	m.called++
+	return rt
+}
+
+func (*tracemock) NewHandler(http.Handler, string, tracing.Options) http.Handler {
+	panic("unreachable")
+}
+
+func TestDoWithDistributedTracingOpts(t *testing.T) {
+	ctx := context.Background()
+	mock := tracemock{}
+	tracing.RegisterHTTPTracing(&mock)
+
+	body := "Some Bad Request was received"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintln(w, body)
+	}))
+	defer ts.Close()
+
+	buf := bytes.Buffer{}
+	logger := logging.New()
+	logger.SetOutput(&buf)
+	logger.SetLevel(logging.Debug)
+
+	config := fmt.Sprintf(`{
+				"name": "foo",
+				"url": %q,
+			}`, ts.URL)
+	ks := map[string]*keys.Config{}
+	client, err := New([]byte(config), ks, DistributedTracingOpts(tracing.Options{"testoption"}))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = client.Do(ctx, "GET", ts.URL)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if exp, act := 1, mock.called; exp != act {
+		t.Errorf("calls to NewTransport: expected %d, got %d", exp, act)
+	}
+}
+
+func TestDoWithResponseInClientLog(t *testing.T) {
+	ctx := context.Background()
+
+	body := "Some Bad Request was received"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintln(w, body)
+	}))
+	defer ts.Close()
+
+	buf := bytes.Buffer{}
+	logger := logging.New()
+	logger.SetOutput(&buf)
+	logger.SetLevel(logging.Debug)
+
+	config := fmt.Sprintf(`{
+				"name": "foo",
+				"url": %q,
+			}`, ts.URL)
+	ks := map[string]*keys.Config{}
+	client, err := New([]byte(config), ks, Logger(logger))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = client.Do(ctx, "GET", ts.URL)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), body) {
+		t.Errorf("expected string %q not found in client logs", body)
+	}
+}
+
+func TestDoWithTruncatedResponseInClientLog(t *testing.T) {
+	ctx := context.Background()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintln(w, strings.Repeat("Some Bad Request was received", 50))
+	}))
+	defer ts.Close()
+
+	buf := bytes.Buffer{}
+	logger := logging.New()
+	logger.SetOutput(&buf)
+	logger.SetLevel(logging.Debug)
+
+	config := fmt.Sprintf(`{
+				"name": "foo",
+				"url": %q,
+			}`, ts.URL)
+	ks := map[string]*keys.Config{}
+	client, err := New([]byte(config), ks, Logger(logger))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	_, err = client.Do(ctx, "GET", ts.URL)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	exp := "Some Bad Request was recei..."
+	if !strings.Contains(buf.String(), exp) {
+		t.Errorf("expected string %q not found in client logs", exp)
 	}
 }
 
@@ -888,7 +1065,7 @@ func TestBearerTokenPath(t *testing.T) {
 		client = newTestBearerClient(t, &ts, tokenPath)
 
 		if resp, err := client.Do(ctx, "GET", "test"); err == nil {
-			bodyBytes, err := ioutil.ReadAll(resp.Body)
+			bodyBytes, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatalf("Unexpected error: %v", err)
 			}
@@ -907,7 +1084,7 @@ func TestBearerTokenPath(t *testing.T) {
 		}
 
 		// Update the token file and try again
-		if err := ioutil.WriteFile(filepath.Join(path, "token.txt"), []byte("newsecret"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(path, "token.txt"), []byte("newsecret"), 0600); err != nil {
 			t.Fatalf("Unexpected error: %s", err)
 		}
 
@@ -1012,6 +1189,41 @@ func TestBearerTokenInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestBearerTokenIsEncodedForOCI(t *testing.T) {
+	config := `{
+		"name": "foo",
+		"type": "oci",
+		"credentials": {
+			"bearer": {
+				"token": "secret",
+				"scheme": "Bearer"
+			}
+		}
+	}`
+
+	client, err := New([]byte(config), map[string]*keys.Config{})
+	if err != nil {
+		t.Fatalf("New() = %q", err)
+	}
+
+	if _, err := client.config.Credentials.Bearer.NewClient(client.config); err != nil {
+		t.Errorf("Bearer.NewClient() = %q", err)
+	}
+
+	req := httptest.NewRequest("", "http://somewhere.com", nil)
+	if err := client.config.Credentials.Bearer.Prepare(req); err != nil {
+		t.Errorf("Bearer.Prepare() = %q", err)
+	}
+
+	token := base64.StdEncoding.EncodeToString([]byte("secret"))
+
+	want := fmt.Sprintf("Bearer %s", token)
+	got := req.Header.Get("Authorization")
+	if got != want {
+		t.Errorf("req.Header.Get(\"Authorization\") = %q, want = %q", got, want)
+	}
+}
+
 func newTestBearerClient(t *testing.T, ts *testServer, tokenPath string) *Client {
 	config := fmt.Sprintf(`{
 			"name": "foo",
@@ -1062,16 +1274,24 @@ func TestClientCert(t *testing.T) {
 		// Ensure the keys don't work anymore, make a new client as the url will have changed
 		client = newTestClient(t, &ts, certPath, keyPath)
 		_, err := client.Do(ctx, "GET", "test")
-		expectedErrMsg := "tls: bad certificate"
-		if err == nil || !strings.Contains(err.Error(), expectedErrMsg) {
-			t.Fatalf("Expected '%s' error but request succeeded", expectedErrMsg)
+		expectedErrMsg := func(s string) bool {
+			switch {
+			case strings.Contains(s, "tls: unknown certificate authority"):
+			case strings.Contains(s, "tls: bad certificate"):
+			default:
+				return false
+			}
+			return true
+		}
+		if err == nil || !expectedErrMsg(err.Error()) {
+			t.Fatalf("Unexpected error %v", err)
 		}
 
 		// Update the key files and try again..
-		if err := ioutil.WriteFile(filepath.Join(path, "client.pem"), ts.clientCertPem, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(path, "client.pem"), ts.clientCertPem, 0600); err != nil {
 			t.Fatalf("Unexpected error: %s", err)
 		}
-		if err := ioutil.WriteFile(filepath.Join(path, "client.key"), ts.clientCertKey, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(path, "client.key"), ts.clientCertKey, 0600); err != nil {
 			t.Fatalf("Unexpected error: %s", err)
 		}
 		if _, err := client.Do(ctx, "GET", "test"); err != nil {
@@ -1196,6 +1416,20 @@ func TestOauth2ClientCredentials(t *testing.T) {
 			ots: &oauth2TestServer{t: t, expScope: &[]string{"read", "opa"}},
 			options: func(c *Config) {
 				c.Credentials.OAuth2.Scopes = []string{"read", "opa"}
+			},
+		},
+		{
+			ts:  &testServer{t: t},
+			ots: &oauth2TestServer{t: t, expHeaders: map[string]string{"x-custom-header": "custom-value"}},
+			options: func(c *Config) {
+				c.Credentials.OAuth2.AdditionalHeaders = map[string]string{"x-custom-header": "custom-value"}
+			},
+		},
+		{
+			ts:  &testServer{t: t},
+			ots: &oauth2TestServer{t: t, expBody: map[string]string{"custom_field": "custom-value"}},
+			options: func(c *Config) {
+				c.Credentials.OAuth2.AdditionalParameters = map[string]string{"custom_field": "custom-value"}
 			},
 		},
 	}
@@ -1500,6 +1734,187 @@ func TestS3SigningInstantiationInitializesLogger(t *testing.T) {
 	}
 }
 
+func TestS3SigningMultiCredentialProvider(t *testing.T) {
+	credentialProviderCount := 4
+	config := `{
+		"name": "foo",
+		"url": "https://bundles.example.com",
+		"credentials": {
+			"s3_signing": {
+				"environment_credentials": {},
+				"profile_credentials": {},
+				"metadata_credentials": {},
+				"web_identity_credentials": {}
+			}
+		}
+	}`
+
+	client, err := New([]byte(config), map[string]*keys.Config{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	awsPlugin := client.config.Credentials.S3Signing
+	if awsPlugin == nil {
+		t.Fatalf("Client config S3 signing credentials setup unexpected")
+	}
+
+	awsCredentialServiceChain, ok := awsPlugin.awsCredentialService().(*awsCredentialServiceChain)
+	if !ok {
+		t.Fatalf("Unexpected AWS credential service:%v is not a chain",
+			reflect.TypeOf(awsCredentialServiceChain))
+	}
+
+	if len(awsCredentialServiceChain.awsCredentialServices) != credentialProviderCount {
+		t.Fatalf("Credential provider count mismatch %d != %d", credentialProviderCount,
+			len(awsCredentialServiceChain.awsCredentialServices))
+	}
+
+	expectedOrder := []awsCredentialService{
+		&awsEnvironmentCredentialService{},
+		&awsWebIdentityCredentialService{},
+		&awsProfileCredentialService{},
+		&awsMetadataCredentialService{},
+	}
+
+	if !reflect.DeepEqual(awsCredentialServiceChain.awsCredentialServices,
+		expectedOrder) {
+		t.Fatalf("Ordering is unexpected")
+	}
+}
+
+func TestAWSCredentialServiceChain(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+		env     map[string]string
+	}{
+		{
+			name: "Fallback to Environment Credential",
+			input: `{
+				"name": "foo",
+				"url": "https://bundles.example.com",
+				"credentials": {
+					"s3_signing": {
+						"web_identity_credentials": {},
+						"environment_credentials": {},
+						"profile_credentials": {},
+						"metadata_credentials": {}
+					}
+				}
+			}`,
+			wantErr: false,
+			env: map[string]string{
+				accessKeyEnvVar: "a",
+				secretKeyEnvVar: "a",
+				awsRegionEnvVar: "us-east-1",
+			},
+		},
+		{
+			name: "No provider is successful",
+			input: `{
+				"name": "foo",
+				"url": "https://bundles.example.com",
+				"credentials": {
+					"s3_signing": {
+						"web_identity_credentials": {},
+						"environment_credentials": {},
+						"profile_credentials": {},
+						"metadata_credentials": {}
+					}
+				}
+			}`,
+			wantErr: true,
+			env:     map[string]string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for key, val := range tc.env {
+				_ = os.Setenv(key, val)
+			}
+
+			t.Cleanup(func() {
+				for key := range tc.env {
+					_ = os.Unsetenv(key)
+				}
+			})
+
+			client, err := New([]byte(tc.input), map[string]*keys.Config{})
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			awsPlugin := client.config.Credentials.S3Signing
+			if awsPlugin == nil {
+				t.Fatalf("Client config S3 signing credentials setup unexpected")
+			}
+
+			req, err := http.NewRequest("GET", "/example/bundle.tar.gz", nil)
+			if err != nil {
+				t.Fatalf("Failed to create HTTP request: %v", err)
+			}
+
+			awsPlugin.logger = client.logger
+			err = awsPlugin.Prepare(req)
+			if err != nil && !tc.wantErr {
+				t.Fatalf("Unexpected error: %v", err)
+			} else if err == nil && tc.wantErr {
+				t.Fatalf("Expected error for input %v", tc.input)
+			}
+		})
+	}
+}
+
+func TestDebugLoggingRequestMaskAuthorizationHeader(t *testing.T) {
+	token := "secret"
+	ts := testServer{t: t, expBearerToken: token}
+	ts.start()
+	defer ts.stop()
+
+	config := fmt.Sprintf(`{
+		"name": "foo",
+		"url": %q,
+		"credentials": {
+			"bearer": {
+				"token": %q
+			}
+		}
+	}`, ts.server.URL, token)
+	client, err := New([]byte(config), map[string]*keys.Config{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	logger := testlogger.New()
+	logger.SetLevel(logging.Debug)
+	client.logger = logger
+
+	ctx := context.Background()
+	if _, err := client.Do(ctx, "GET", "test"); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var reqLogFound bool
+	for _, entry := range logger.Entries() {
+		if entry.Fields["headers"] != nil {
+			headers := entry.Fields["headers"].(http.Header)
+			authzHeader := headers.Get("Authorization")
+			if authzHeader != "" {
+				reqLogFound = true
+				if authzHeader != "REDACTED" {
+					t.Errorf("Excpected redacted Authorization header value, got %v", authzHeader)
+				}
+			}
+		}
+	}
+	if !reqLogFound {
+		t.Fatalf("Expected log entry from request")
+	}
+}
+
 func newTestClient(t *testing.T, ts *testServer, certPath string, keypath string) *Client {
 	config := fmt.Sprintf(`{
 			"name": "foo",
@@ -1552,10 +1967,13 @@ type oauth2TestServer struct {
 	expGrantType     string
 	expClientID      string
 	expClientSecret  string
+	expHeaders       map[string]string
+	expBody          map[string]string
 	expJwtCredential bool
 	expScope         *[]string
 	expAlgorithm     jwa.SignatureAlgorithm
 	expX5t           string
+	expSignature     string
 	tokenType        string
 	tokenTTL         int64
 	invocations      int32
@@ -1707,6 +2125,18 @@ func (t *oauth2TestServer) handle(w http.ResponseWriter, r *http.Request) {
 		t.t.Fatalf("Expected grant_type=%v", t.expGrantType)
 	}
 
+	for k, v := range t.expBody {
+		if r.Form[k][0] != v {
+			t.t.Fatalf("Expected header %s=%s got %s", k, v, r.Form[k][0])
+		}
+	}
+
+	for k, v := range t.expHeaders {
+		if r.Header.Get(k) != v {
+			t.t.Fatalf("Expected header %s=%s got %s", k, v, r.Header.Get(k))
+		}
+	}
+
 	if len(r.Form["scope"]) > 0 {
 		scope := strings.Split(r.Form["scope"][0], " ")
 		if !reflect.DeepEqual(*t.expScope, scope) {
@@ -1739,11 +2169,17 @@ func (t *oauth2TestServer) handle(w http.ResponseWriter, r *http.Request) {
 		} else {
 			token = r.Form["client_assertion"][0]
 		}
-		_, err := jws.Verify([]byte(token), t.expAlgorithm, t.verificationKey)
-		if err != nil {
-			t.t.Fatalf("Unexpected signature verification error %v", err)
+		if t.expSignature != "" {
+			signature := strings.Split(token, ".")[2]
+			if t.expSignature != signature {
+				t.t.Errorf("Expected expSignature %v, got %v", t.expSignature, signature)
+			}
+		} else {
+			_, err := jws.Verify([]byte(token), t.expAlgorithm, t.verificationKey)
+			if err != nil {
+				t.t.Fatalf("Unexpected signature verification error %v", err)
+			}
 		}
-
 		if t.expX5t != "" {
 			headerRaw, _ := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[0])
 			var headers map[string]string
@@ -1972,4 +2408,118 @@ func (m *myPluginMock) NewClient(c Config) (*http.Client, error) {
 }
 func (*myPluginMock) Prepare(*http.Request) error {
 	return nil
+}
+
+func TestOauth2ClientCredentialsGrantTypeWithKms(t *testing.T) {
+
+	// DER-encoded object from KMS as explained here: https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html#API_Sign_ResponseSyntax
+	derEncodeSignature := []byte{48, 68, 2, 32, 84, 124, 17, 255, 68, 181, 189, 159, 77, 235, 242, 88, 85, 139, 84, 111, 204, 108, 235, 90, 128, 220, 247, 176, 215, 28, 188, 110, 19, 158, 137, 30, 2, 32, 88, 17, 176, 72, 157, 42, 1, 223, 69, 41, 225, 77, 121, 13, 117, 132, 146, 243, 45, 208, 207, 119, 233, 156, 96, 94, 192, 174, 136, 218, 206, 84}
+	// The signature representing the above object
+	jwtSignature := "VHwR_0S1vZ9N6_JYVYtUb8xs61qA3Pew1xy8bhOeiR5YEbBInSoB30Up4U15DXWEkvMt0M936ZxgXsCuiNrOVA"
+
+	ts := testServer{t: t, expBearerToken: "token_1"}
+	ts.start()
+	defer ts.stop()
+
+	ots := oauth2TestServer{
+		t:                t,
+		tokenTTL:         300,
+		expScope:         &[]string{"scope1", "scope2"},
+		expJwtCredential: true,
+		expAlgorithm:     jwa.ES256,
+		expGrantType:     grantTypeClientCredentials,
+		expSignature:     jwtSignature,
+	}
+	ots.start()
+	defer ots.stop()
+
+	kmsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var signRequest = &aws.KMSSignRequest{}
+		if r.Body != nil {
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("failed to read kms sign request = %v", err)
+			}
+			defer r.Body.Close()
+			err = json.Unmarshal(bodyBytes, signRequest)
+			if err != nil {
+				t.Fatalf("failed to unmarshall kms sign request = %v", err)
+			}
+		}
+		responseFmt := `{"KeyId": "%s", "Signature": "%s", "SigningAlgorithm": "%s"}`
+		responsePayload := fmt.Sprintf(responseFmt, signRequest.KeyID, base64.StdEncoding.EncodeToString(derEncodeSignature), signRequest.SigningAlgorithm)
+		if _, err := io.WriteString(w, responsePayload); err != nil {
+			t.Fatalf("io.WriteString(w, payload) = %v", err)
+		}
+	}))
+	defer kmsServer.Close()
+
+	logger := logging.New()
+	logger.SetLevel(logging.Debug)
+
+	kms := aws.NewKMSWithURLClient(kmsServer.URL, kmsServer.Client(), logger)
+	client := newOauth2KmsClientCredentialsTestClient(t, &ts, &ots, kms)
+	ctx := context.Background()
+	_, err := client.Do(ctx, "GET", "test")
+	if err != nil {
+		t.Fatalf("Unexpected error %v", err)
+	}
+
+	_, err = client.Do(ctx, "GET", "test")
+	if err != nil {
+		t.Fatalf("Unexpected error %v", err)
+	}
+}
+
+// Create client to test ClientCredentials grant using KMS
+func newOauth2KmsClientCredentialsTestClient(t *testing.T, ts *testServer, ots *oauth2TestServer, kms *aws.KMS) *Client {
+	config := fmt.Sprintf(`{
+			"name": "foo",
+			"url": %q,
+			"allow_insecure_tls": true,
+			"credentials": {
+				"oauth2": {
+					"token_url": "%v/token",
+					"grant_type": %q,
+					"scopes": ["scope1", "scope2"],
+					"additional_claims": {
+						"aud": "test-audience",
+						"iss": "client-one"
+					},
+					"aws_kms": {
+						"name": "arn:aws:kms:eu-west-1:account_no:key/key_id",
+						"algorithm": "ECDSA_SHA_256"
+					},
+					"aws_signing": {
+						"service": "kms",
+						"environment_credentials": {
+							"aws_default_region": "eu-west-1"
+						}
+					}
+				}
+			}
+		}`, ts.server.URL, ots.server.URL, grantTypeClientCredentials)
+
+	// Setup variables for environment_credentials{}
+	t.Setenv(accessKeyEnvVar, accessKeyEnvVar)
+	t.Setenv(secretKeyEnvVar, secretKeyEnvVar)
+	t.Setenv(awsRegionEnvVar, awsRegionEnvVar)
+
+	client, err := New([]byte(config), map[string]*keys.Config{})
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if _, err := client.config.Credentials.OAuth2.NewClient(client.config); err != nil {
+		t.Fatalf("OAuth2.NewClient() = %q", err)
+	}
+
+	if client.config.Credentials.OAuth2.AWSSigningPlugin.kmsSignPlugin == nil {
+		t.Errorf("OAuth2.AWSSigningPlugin.kmsSignPlugin isn't setup")
+	}
+
+	// setup fake KMS signer
+	client.config.Credentials.OAuth2.AWSSigningPlugin.kmsSignPlugin.kms = kms
+	return &client
 }

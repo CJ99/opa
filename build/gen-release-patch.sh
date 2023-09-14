@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+stty -onlcr # don't translate newline to carriage return-newline, as these break patch tool
 set -e
 
 OPA_DIR=/go/src/github.com/open-policy-agent/opa
@@ -41,8 +42,8 @@ if [ -z "$LAST_VERSION" ]; then
     LAST_VERSION=$(git describe --abbrev=0 --tags)
 fi
 
-update_makefile() {
-    sed -i='' -e "s/Version\s\+=\s\+\".\+\"$/Version = \"$VERSION\"/" version/version.go
+update_version() {
+    ./build/update-version.sh "$VERSION"
 }
 
 update_changelog() {
@@ -76,10 +77,16 @@ update_capabilities() {
     git add --intent-to-add capabilities/v$VERSION.json
 }
 
+update_metadata() {
+    make generate
+    git add --intent-to-add builtin_metadata.json
+}
+
 main() {
-    update_makefile
+    update_version
     update_changelog
     update_capabilities
+    update_metadata
     git --no-pager diff --no-color
 }
 

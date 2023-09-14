@@ -13,12 +13,12 @@ The tips below cover the OPA-Kubernetes integration that uses kube-mgmt.
 The [OPA Gatekeeper version](https://open-policy-agent.github.io/gatekeeper)
 has its own docs.
 
-### Check for the `openpolicyagent.org/policy-status` annotation on ConfigMaps containing policies
+### Check for the `openpolicyagent.org/kube-mgmt-status` annotation on ConfigMaps containing policies
 
 If you are loading policies into OPA via
 [kube-mgmt](https://github.com/open-policy-agent/kube-mgmt) you can check the
-`openpolicyagent.org/policy-status` annotation on ConfigMaps that contain your
-policies. The annotation should be set to `"ok"` if the policy was loaded
+`openpolicyagent.org/kube-mgmt-status` annotation on ConfigMaps that contain your
+policies. The annotation should be set to `{"status":"ok"}` if the policy was loaded
 successfully. If errors occurred during loading (e.g., because the policy
 contained a syntax error) the cause will be reported here.
 
@@ -121,7 +121,7 @@ package system
 
 ```live:patch/good:module:read_only,openable
 main := {
-	"apiVersion": "admission.k8s.io/v1beta1",
+	"apiVersion": "admission.k8s.io/v1",
 	"kind": "AdmissionReview",
 	"response": response,
 }
@@ -145,7 +145,7 @@ patches := [
 
 ```live:patch/bad:module:read_only
 main := {
-	"apiVersion": "admission.k8s.io/v1beta1",
+	"apiVersion": "admission.k8s.io/v1",
 	"kind": "AdmissionReview",
 	"response": response,
 }
